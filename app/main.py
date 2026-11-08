@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.20"
+VERSION = "1.21"
 NOMBRE = "Diana"
 
 
@@ -1013,7 +1013,12 @@ def dialogo_pago(parent, n, saldo, doc="factura", forma="Transferencia"):
         if monto <= 0:
             messagebox.showwarning("Pago", "Escriba el monto del pago parcial.", parent=top); return
         if monto > saldo + 0.005:
-            messagebox.showwarning("Pago", f"El monto no puede ser mayor que el saldo ({m2(saldo)}).", parent=top); return
+            if doc != "factura":
+                messagebox.showwarning("Pago", f"El monto no puede ser mayor que el saldo ({m2(saldo)}).", parent=top); return
+            if not messagebox.askyesno("Pago", f"El pago ({m2(monto)}) es mayor que el saldo ({m2(saldo)}).\n\n"
+                                       f"El exceso de {m2(monto - saldo)} quedará como saldo a favor del cliente\n"
+                                       "(cuenta de pasivo 'Pagos recibidos de clientes').\n\n¿Seguir?", parent=top):
+                return
         res["r"] = (round(monto, 2), fecha, vp.get(), vn.get().strip() or ("Pago total" if tipo.get() == "total" else "Pago parcial"))
         top.destroy()
     bf = ttk.Frame(top); bf.grid(row=len(filas) + 2, column=0, columnspan=2, pady=10)
@@ -1235,11 +1240,17 @@ class App:
             out.append(dict(fecha=p["date"][:10], ref=ref, tipo="Pago a suplidor", titulo=f"Asiento del pago de la compra {p['nro']}",
                             info=f"PAGO A SUPLIDOR con fecha {fd(p['date'])}, compra {p['nro']} (compra con fecha {fd(p['fdate'])})   {p['name'] or ''}\nMonto {m2(p['amount'] or 0)}   Forma: {p['method'] or ''}",
                             descr=f"Pago compra {p['nro']} {p['name'] or ''}".strip(), op="pago", montos=dict(monto=p["amount"] or 0)))
-        for m in db.q("SELECT s.rowid AS id, s.code, s.qty, s.date, s.cost, p.descr FROM stock_moves s "
-                      "LEFT JOIN products p ON p.code=s.code WHERE s.kind='A' AND s.date BETWEEN ? AND ?", (d1, d2)):
+        hoy_iso = datetime.date.today().isoformat()
+        for m in db.q("SELECT s.rowid AS id, s.code, s.qty, s.date, s.cost, p.descr, p.cost AS pcost FROM stock_moves s "
+                      "LEFT JOIN products p ON p.code=s.code WHERE s.kind='A' AND (s.date BETWEEN ? AND ? "
+                      "OR COALESCE(s.date,'')='')", (d1, d2)):
             ref = f"AJ:{m['id']}"
-            if not ok(ref, m["date"]): continue
-            val = round((m["qty"] or 0) * (m["cost"] or 0), 2)
+            viejo = not m["date"]   # ajuste viejo sin fecha: se muestra una vez con fecha de hoy
+            if not ok(ref, m["date"] or hoy_iso): continue
+            costo = m["cost"] if (m["cost"] or 0) else (m["pcost"] or 0)
+            val = round((m["qty"] or 0) * costo, 2)
+            m = dict(m); m["cost"] = costo; m["date"] = m["date"] or hoy_iso
+            if viejo: m["descr"] = (m["descr"] or "") + "  (ajuste viejo sin fecha: si ya está en el diario, márquelo así)"
             out.append(dict(fecha=m["date"][:10], ref=ref, tipo="Ajuste de inventario", titulo=f"Asiento del ajuste de inventario {m['code']}",
                             info=f"AJUSTE DE INVENTARIO con fecha {fd(m['date'])}   {m['code']} {m['descr'] or ''}\n"
                                  f"Cantidad {(m['qty'] or 0):+,.2f}   Costo unitario {m2(m['cost'] or 0)}   Valor {m2(val)}",
@@ -1261,6 +1272,12 @@ class App:
                 v = self.gl.con.execute("SELECT COALESCE(SUM(l.amount),0) FROM gl_lines l JOIN gl_jv j ON j.id=l.jv_id "
                                         "WHERE l.account_id=? AND j.date>=?", (c["id"], d1)).fetchone()[0]
                 v = round(v or 0, 2)
+                # saldo anterior a la fecha de arranque: se ofrece una sola vez (si no es real se marca y no vuelve)
+                if not self.db.cfg(f"gl_viejo_ok_{c['id']}"):
+                    viejo = self.gl.con.execute("SELECT COALESCE(SUM(l.amount),0) FROM gl_lines l JOIN gl_jv j ON j.id=l.jv_id "
+                                                "WHERE l.account_id=? AND j.date<?", (c["id"], d1)).fetchone()[0]
+                    viejo = round(viejo or 0, 2)
+                    if viejo > 0: v = round(v + viejo, 2)
                 if v > 0: out.append((c, v))
         return out
 
@@ -1271,9 +1288,23 @@ class App:
         def norm(s):
             return "".join(ch for ch in unicodedata.normalize("NFD", (s or "").lower()) if unicodedata.category(ch) != "Mn")
         gl = self.gl; hoy = datetime.date.today()
+        d1 = (gl.arranque() or "")[:10]
         for caja, saldo in self.balances_por_pasar():
             ctas = gl.cuentas()
             nom = f"{caja['code']} {caja['name']}"
+            if not self.db.cfg(f"gl_viejo_ok_{caja['id']}"):
+                viejo = round(gl.con.execute("SELECT COALESCE(SUM(l.amount),0) FROM gl_lines l JOIN gl_jv j ON j.id=l.jv_id "
+                                             "WHERE l.account_id=? AND j.date<?", (caja["id"], d1)).fetchone()[0] or 0, 2)
+                if viejo > 0:
+                    r = messagebox.askyesnocancel(nom, f"{nom} tenía un saldo de {m2(viejo)} antes del {dmy(parse_date(d1))}.\n\n"
+                                                  "¿Ese saldo es real y lo va a depositar ahora?\n\n"
+                                                  "Sí = se incluye en el depósito\nNo = no es real: no se vuelve a mostrar\n"
+                                                  "Cancelar = decidir después")
+                    if r is None:
+                        saldo = round(saldo - viejo, 2)
+                    elif r is False:
+                        self.db.set_cfg(f"gl_viejo_ok_{caja['id']}", "1"); saldo = round(saldo - viejo, 2)
+                    if saldo <= 0.005: continue
             destinos = [c for c in ctas if not c["suspended"] and c["id"] != caja["id"] and
                         any(x in norm(c["name"]) for x in ("canopolis", "miguel canahuate"))]
             if not destinos:
@@ -1418,6 +1449,26 @@ class App:
         messagebox.showinfo("Cuadrar valores Fact & Drio. Gral", f"Ajustes grabados: {hechos}\n"
                             f"No se volverán a recordar: {norec}\nRechazados (siguen con diferencia): {len(difs) - hechos - norec}")
 
+    def asientos_conduces(self):
+        """Asientos de conduces (de antes de la 1.8): los conduces ya no llevan asiento y duplican el costo."""
+        return self.gl.con.execute("SELECT id, number, date, descr, amount FROM gl_jv WHERE ref LIKE 'G:%' "
+                                   "AND ref NOT LIKE '%#anulado%' ORDER BY date").fetchall()
+
+    def borrar_asientos_conduces(self):
+        filas = self.asientos_conduces()
+        borrados = 0
+        for r in filas:
+            if messagebox.askyesno("Asientos de conduces",
+                                   f"Asiento {r['number'] or ''} del {dmy(r['date'])}: {r['descr']}   Monto {m2(r['amount'] or 0)}\n\n"
+                                   "Los conduces ya no llevan asiento (el costo va con la factura) y este lo duplica.\n"
+                                   "El conduce en Facturación no se toca.\n\n¿Borrar este asiento?", icon="warning"):
+                try:
+                    self.gl.borrar_asiento(r["id"]); borrados += 1
+                except Exception as e:
+                    messagebox.showwarning("Asientos de conduces", str(e))
+        if borrados: self.refresh_all()
+        return borrados
+
     def hay_pendientes(self):
         """Para el parpadeo del botón: solo documentos de Facturación sin asiento o ventas cobradas directo
         que siguen pendientes. Las diferencias de cuadre no lo hacen parpadear (se revisan al pulsarlo)."""
@@ -1425,7 +1476,7 @@ class App:
         if not a: return False
         try:
             if self.pendientes_contables(a, datetime.date.today().isoformat()): return True
-            return bool(self.facturas_cobradas_directo())
+            return bool(self.facturas_cobradas_directo()) or bool(self.asientos_conduces())
         except Exception:
             return False
 
@@ -1437,6 +1488,8 @@ class App:
                                    "   2. Cuadrar valores Facturación y Diario General\n\n"
                                    "Cada asiento lo aprueba, lo cambia o lo rechaza usted.\n\n¿Empezar?"):
             return
+        if self.asientos_conduces():
+            self.borrar_asientos_conduces()
         self.contabilizar_pendientes()
         directas = self.facturas_cobradas_directo()
         if directas:
@@ -1804,9 +1857,13 @@ class App:
     def registrar_cobro(self, n, monto, forma, fecha, nota):
         inv = self.db.one("SELECT name FROM invoices WHERE nro=?", (n,))
         sig = (self.db.one("SELECT MAX(id) FROM payments")[0] or 0) + 1
+        saldo = max(0.0, self.db.invoice_saldo(n))
+        exceso = round(monto - saldo, 2)
+        op, montos = ("cobro_exceso", dict(monto=monto, saldo=saldo)) if exceso > 0.005 else ("cobro", dict(monto=monto))
         asiento = self.gl_doc(self.root, f"PAGO:{sig}", f"Asiento del cobro de la factura {n}",
-                              f"Cobro de la factura {n}   {inv['name'] if inv else ''}\nMonto {m2(monto)}   Forma: {forma}",
-                              f"Cobro factura {n} {inv['name'] if inv else ''}".strip(), fecha, "cobro", dict(monto=monto))
+                              f"Cobro de la factura {n}   {inv['name'] if inv else ''}\nMonto {m2(monto)}   Forma: {forma}"
+                              + (f"\nSaldo a favor del cliente (exceso): {m2(exceso)}" if exceso > 0.005 else ""),
+                              f"Cobro factura {n} {inv['name'] if inv else ''}".strip(), fecha, op, montos)
         if asiento is None: return
         self.db.add_payment(n, monto, forma, fecha, nota)
         pid = self.db.one("SELECT MAX(id) FROM payments")[0]

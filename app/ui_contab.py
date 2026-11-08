@@ -987,6 +987,7 @@ CUENTAS_AUTO = {
     "costo": ("Costo de la mercancía vendida", "5000"),
     "inventario": ("Inventario", "1200"),
     "banco_cobros": ("Banco donde entran los cobros", "1004"),
+    "anticipos": ("Pagos recibidos de clientes (saldos a favor, pasivo)", ""),
     "cxp": ("Cuentas por pagar a suplidores", ""),
     "itbis_compras": ("ITBIS pagado en compras", "5118"),
     "banco_pagos": ("Banco de donde salen los pagos a suplidores", "1004"),
@@ -999,6 +1000,7 @@ NECESITA = {
     "conduce": ["costo", "inventario"],
     "compra": ["inventario", "itbis_compras", "cxp"],
     "cobro": ["banco_cobros", "cxc"],
+    "cobro_exceso": ["banco_cobros", "cxc", "anticipos"],
     "pago": ["cxp", "banco_pagos"],
     "ajuste": ["inventario", "ajuste_inv"],
 }
@@ -1077,6 +1079,8 @@ def lineas_auto(gl, op, m):
         add("inventario", neto); add("itbis_compras", itb); add("cxp", -tot)
     elif op == "cobro":
         add("banco_cobros", m["monto"]); add("cxc", -m["monto"])
+    elif op == "cobro_exceso":   # pagó más de lo que debía: el exceso queda como saldo a favor del cliente (pasivo)
+        add("banco_cobros", m["monto"]); add("cxc", -m["saldo"]); add("anticipos", -(m["monto"] - m["saldo"]))
     elif op == "pago":
         add("cxp", m["monto"]); add("banco_pagos", -m["monto"])
     elif op == "ajuste":
