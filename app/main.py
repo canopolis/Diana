@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.21"
+VERSION = "1.22"
 NOMBRE = "Diana"
 
 
@@ -1415,13 +1415,7 @@ class App:
         omit = [x for x in filas if abs(round(x[2] - x[3], 2)) >= 0.005 and clave(x) in ign]
         if solo_revisar:
             return len(difs)
-        if omit:
-            txt += "\n\nNo se recuerdan (pidió no volver a recordarlos): " + ", ".join(x[0].split(" (")[0] for x in omit)
-        if not difs:
-            messagebox.showinfo("Cuadrar valores Fact & Drio. Gral", txt + ("\n\nNo hay ajustes por revisar." if omit else "\n\nTodo cuadra. No hace falta ajuste.")); return
-        if not messagebox.askyesno("Cuadrar valores Fact & Drio. Gral", txt + f"\n\nHay {len(difs)} diferencia(s).\n"
-                                   "Se abre un asiento de ajuste por cada una: apruébelo (OK), cámbielo y apruébelo, "
-                                   "o recháselo (Cancelar).\nEn la segunda línea elija la cuenta de contrapartida.\n\n¿Empezar?"):
+        if not self._ventana_cuadre(filas, omit, difs, per, hoy):
             return
         hechos = norec = 0
         for i, (n, c, f, d, s) in enumerate(difs, 1):
@@ -1468,6 +1462,54 @@ class App:
                     messagebox.showwarning("Asientos de conduces", str(e))
         if borrados: self.refresh_all()
         return borrados
+
+    def _ventana_cuadre(self, filas, omit, difs, per, hoy):
+        """Tabla del cuadre: Concepto | Facturación | Diario General | Diferencia (verde = cuadra, rojo = diferencia).
+        Devuelve True si el usuario quiere revisar los ajustes."""
+        fuente = "Segoe UI" if sys.platform.startswith("win") else "DejaVu Sans"
+        VERDE, ROJO, CAB, BORDE, GRIS = "#1b7f3b", "#c62828", "#e8eef7", "#9a9a9a", "#555555"
+        top = tk.Toplevel(self.root); top.title("Cuadrar valores Fact & Drio. Gral"); top.configure(bg="white")
+        top.transient(self.root); top.grab_set(); top.resizable(False, False)
+        tk.Label(top, text=f"Cuadre Facturación vs Diario General al {dmy(hoy)}", bg="white",
+                 font=(fuente, 12, "bold")).pack(anchor="w", padx=14, pady=(12, 6))
+        marco = tk.Frame(top, bg=BORDE, bd=0, padx=1, pady=1); marco.pack(fill="x", padx=14)
+        tabla = tk.Frame(marco, bg="white"); tabla.pack(fill="both")
+        anchos = (24, 14, 14, 11)
+        for j, (t, w) in enumerate(zip(("Concepto", "Facturación", "Diario General", "Diferencia"), anchos)):
+            tk.Label(tabla, text=t, bg=CAB, font=(fuente, 10, "bold"), width=w, relief="raised", bd=1,
+                     padx=6, pady=4).grid(row=0, column=j, sticky="nsew")
+        ign = {id(x) for x in omit}
+        for i, (n, c, f, d, s) in enumerate(filas, 1):
+            dif = round(f - d, 2)
+            hay = abs(dif) >= 0.005
+            color = ROJO if hay else VERDE
+            peso = "bold" if hay else "normal"
+            nombre = n.split(" (")[0] + ("*" if n.startswith("Ventas") else "") + ("  (no se recuerda)" if id((n, c, f, d, s)) in ign or any(x[0] == n for x in omit) else "")
+            vals = (nombre, m2(f), m2(d), m2(dif))
+            for j, (v, w) in enumerate(zip(vals, anchos)):
+                tk.Label(tabla, text=v, bg="white", fg=color, font=(fuente, 10, peso), width=w,
+                         anchor="w" if j == 0 else "e", padx=6, pady=5).grid(row=i, column=j, sticky="nsew")
+        tk.Label(tabla, text="", bg="white", pady=4).grid(row=len(filas) + 1, column=0)
+        nota = f"* Ventas {per}.  Saldos al {dmy(hoy)}.\nInventario al último costo de compra (igual que el reporte 'Valor del inventario')."
+        tk.Label(top, text=nota, bg="white", fg=GRIS, justify="left", font=(fuente, 9)).pack(anchor="w", padx=14, pady=8)
+        res = {"ok": False}
+        bf = tk.Frame(top, bg="white")
+        if difs:
+            tk.Label(top, text=f"✖ Hay {len(difs)} diferencia(s). Se abre un asiento de ajuste por cada una "
+                               "(OK = aprobar, Cancelar = rechazar).", bg="white", fg=ROJO,
+                     font=(fuente, 11, "bold"), wraplength=640, justify="left").pack(anchor="w", padx=14)
+            bf.pack(anchor="e", padx=14, pady=10)
+            ttk.Button(bf, text="Revisar ajustes", width=16,
+                       command=lambda: (res.update(ok=True), top.destroy())).pack(side="left", padx=4)
+            ttk.Button(bf, text="Cerrar", width=12, command=top.destroy).pack(side="left", padx=4)
+        else:
+            tk.Label(top, text="✔ Todo cuadra. No hace falta ajuste." if not omit else "✔ No hay ajustes por revisar.",
+                     bg="white", fg=VERDE, font=(fuente, 11, "bold")).pack(anchor="w", padx=14)
+            bf.pack(anchor="e", padx=14, pady=10)
+            ttk.Button(bf, text="OK", width=12, command=top.destroy).pack()
+        top.bind("<Escape>", lambda e: top.destroy())
+        self.root.wait_window(top)
+        return res["ok"]
 
     def hay_pendientes(self):
         """Para el parpadeo del botón: solo documentos de Facturación sin asiento o ventas cobradas directo
