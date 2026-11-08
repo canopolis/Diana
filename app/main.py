@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.4"
+VERSION = "1.5"
 NOMBRE = "Diana"
 
 
@@ -1105,8 +1105,12 @@ class App:
         """Documentos de Facturación entre d1 y d2 (AAAA-MM-DD) que no tienen asiento. Lista ordenada por fecha."""
         gl, db = self.gl, self.db
         out = []
+        gl.con.execute("CREATE TABLE IF NOT EXISTS gl_ya_en_diario(ref TEXT PRIMARY KEY, fecha TEXT)")
+        ya = {r[0] for r in gl.con.execute("SELECT ref FROM gl_ya_en_diario")}
         def ok(ref, fecha):
-            return d1 <= (fecha or "")[:10] <= d2 and not gl.asiento_de(ref)
+            return d1 <= (fecha or "")[:10] <= d2 and ref not in ya and not gl.asiento_de(ref)
+        def fd(s):
+            return dmy(parse_date(s[:10])) if s else ""
         def lns(rows):
             return [dict(qty=r["qty"] or 0, price=r["price"] or 0, cost=r["cost"] or 0, itbis=r["itbis"] or 0) for r in rows]
         for h in db.q("SELECT * FROM invoices WHERE deleted=0 AND date BETWEEN ? AND ? ORDER BY date, nro", (d1, d2)):
@@ -1115,7 +1119,7 @@ class App:
             ls = lns(db.q("SELECT * FROM lines WHERE nro=? ORDER BY pos", (h["nro"],)))
             dsc = h["discount"] or 0
             out.append(dict(fecha=h["date"][:10], ref=ref, tipo="Factura", titulo=f"Asiento de la factura {h['nro']}",
-                            info=info_documento(db, "F", h["nro"], dict(h), ls, dsc, h["tipo"], h["ncf"]),
+                            info=f"FACTURA con fecha {fd(h['date'])}\n" + info_documento(db, "F", h["nro"], dict(h), ls, dsc, h["tipo"], h["ncf"]),
                             descr=f"Factura {h['nro']} {h['name'] or ''}".strip(), op="venta",
                             montos=dict(montos_doc(ls, dsc), fiscal=(h["tipo"] or 0) != 0)))
         for h in db.q("SELECT * FROM odocs WHERE deleted=0 AND kind IN ('NC','ND','G','O') AND date BETWEEN ? AND ? "
@@ -1133,22 +1137,22 @@ class App:
                 fiscal = bool(t and (t[0] or 0) != 0)
             op = {"NC": "nc", "ND": "nd", "G": "conduce", "O": "compra"}[k]
             out.append(dict(fecha=h["date"][:10], ref=ref, tipo=KIND_NAME[k], titulo=f"Asiento de {KIND_NAME[k].lower()} {h['nro']}",
-                            info=info_documento(db, k, h["nro"], dict(h), ls, dsc),
+                            info=f"{KIND_NAME[k].upper()} con fecha {fd(h['date'])}\n" + info_documento(db, k, h["nro"], dict(h), ls, dsc),
                             descr=f"{KIND_NAME[k]} {h['nro']} {h['name'] or ''}".strip(), op=op,
                             montos=dict(montos_doc(ls, dsc), devolucion=h["status"] == "Con devolución", fiscal=fiscal)))
-        for p in db.q("SELECT p.*, i.name FROM payments p LEFT JOIN invoices i ON i.nro=p.nro "
+        for p in db.q("SELECT p.*, i.name, i.date AS fdate FROM payments p LEFT JOIN invoices i ON i.nro=p.nro "
                       "WHERE p.date BETWEEN ? AND ? ORDER BY p.date, p.id", (d1, d2)):
             ref = f"PAGO:{p['id']}"
             if not ok(ref, p["date"]): continue
             out.append(dict(fecha=p["date"][:10], ref=ref, tipo="Cobro", titulo=f"Asiento del cobro de la factura {p['nro']}",
-                            info=f"Cobro de la factura {p['nro']}   {p['name'] or ''}\nMonto {m2(p['amount'] or 0)}   Forma: {p['method'] or ''}",
+                            info=f"COBRO con fecha {fd(p['date'])} de la factura {p['nro']} (factura con fecha {fd(p['fdate'])})   {p['name'] or ''}\nMonto {m2(p['amount'] or 0)}   Forma: {p['method'] or ''}",
                             descr=f"Cobro factura {p['nro']} {p['name'] or ''}".strip(), op="cobro", montos=dict(monto=p["amount"] or 0)))
-        for p in db.q("SELECT p.*, o.name FROM ap_payments p LEFT JOIN odocs o ON o.kind='O' AND o.nro=p.nro "
+        for p in db.q("SELECT p.*, o.name, o.date AS fdate FROM ap_payments p LEFT JOIN odocs o ON o.kind='O' AND o.nro=p.nro "
                       "WHERE p.date BETWEEN ? AND ? ORDER BY p.date, p.id", (d1, d2)):
             ref = f"APPAGO:{p['id']}"
             if not ok(ref, p["date"]): continue
             out.append(dict(fecha=p["date"][:10], ref=ref, tipo="Pago a suplidor", titulo=f"Asiento del pago de la compra {p['nro']}",
-                            info=f"Pago a suplidor, compra {p['nro']}   {p['name'] or ''}\nMonto {m2(p['amount'] or 0)}   Forma: {p['method'] or ''}",
+                            info=f"PAGO A SUPLIDOR con fecha {fd(p['date'])}, compra {p['nro']} (compra con fecha {fd(p['fdate'])})   {p['name'] or ''}\nMonto {m2(p['amount'] or 0)}   Forma: {p['method'] or ''}",
                             descr=f"Pago compra {p['nro']} {p['name'] or ''}".strip(), op="pago", montos=dict(monto=p["amount"] or 0)))
         out.sort(key=lambda x: (x["fecha"], x["ref"]))
         return out
@@ -1165,16 +1169,22 @@ class App:
         det = "\n".join(f"   {t}: {n}" for t, n in cuenta.items())
         if not messagebox.askyesno("Asientos pendientes", f"Hay {len(pend)} documento(s) sin asiento:\n{det}\n\n"
                                    "Se abre el asiento de cada uno ya lleno. Revíselo, cámbielo si hace falta y dé OK.\n"
+                                   "Si ya lo registró a mano en el diario, pulse 'Ya está en el diario' y no se vuelve a pedir.\n"
                                    "Si cierra la ventana sin OK, ese documento se salta y queda pendiente.\n\n¿Empezar?"):
             return
-        hechos = saltados = 0
+        hechos = saltados = marcados = 0
         orig = self.gl.contabiliza
         self.gl.contabiliza = lambda fecha: True   # aqui se contabiliza aunque sea antes de la fecha de arranque
         try:
             for i, p in enumerate(pend, 1):
                 r = ui_contab.asiento_automatico(self.root, self.gl, p["ref"], p["descr"],
                                                  datetime.date.fromisoformat(p["fecha"]), p["op"], p["montos"],
-                                                 f"{p['titulo']}   ({i} de {len(pend)})", p["info"])
+                                                 f"{p['titulo']}   ({i} de {len(pend)})", p["info"], ya_en_diario=True)
+                if r == "YA":
+                    self.gl.con.execute("INSERT OR REPLACE INTO gl_ya_en_diario(ref, fecha) VALUES(?,?)",
+                                        (p["ref"], datetime.date.today().isoformat()))
+                    self.gl.con.commit(); marcados += 1
+                    continue
                 if r:
                     try:
                         self.gl_grabar(self.root, r); hechos += 1
@@ -1189,8 +1199,9 @@ class App:
         finally:
             self.gl.contabiliza = orig
         self.refresh_all()
-        messagebox.showinfo("Asientos pendientes", f"Asientos grabados: {hechos}\nSaltados (siguen pendientes): {saltados}"
-                            + (f"\nNo revisados: {len(pend) - hechos - saltados}" if len(pend) - hechos - saltados else ""))
+        messagebox.showinfo("Asientos pendientes", f"Asientos grabados: {hechos}\nYa estaban en el diario: {marcados}\n"
+                            f"Saltados (siguen pendientes): {saltados}"
+                            + (f"\nNo revisados: {len(pend) - hechos - saltados - marcados}" if len(pend) - hechos - saltados - marcados else ""))
 
     def gl_anular(self, ref, descr, parent=None):
         return ui_contab.anular_documento(parent or self.root, self.gl, ref, descr)

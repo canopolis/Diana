@@ -56,7 +56,7 @@ class AsientoDialog(tk.Toplevel):
     Facturación guarde el documento y el asiento juntos."""
 
     def __init__(self, parent, gl, jv_id=None, modo="guardar", titulo="Asiento de diario",
-                 info="", descr="", fecha=None, ref=None, source="GL JV", copiar_de=None, nuevo_cb=None, prellenar=None):
+                 info="", descr="", fecha=None, ref=None, source="GL JV", copiar_de=None, nuevo_cb=None, prellenar=None, ya_en_diario=False):
         super().__init__(parent)
         self.gl = gl; self.jv_id = jv_id; self.modo = modo; self.ref = ref; self.source = source
         self.result = None; self.nuevo_cb = nuevo_cb
@@ -124,6 +124,9 @@ class AsientoDialog(tk.Toplevel):
         if modo == "guardar" and nuevo_cb:
             ttk.Button(pie, text="OK y Nuevo", command=lambda: self.ok(nuevo=True)).pack(side="right", padx=3)
         ttk.Button(pie, text="OK", command=self.ok).pack(side="right", padx=3)
+        if ya_en_diario:
+            ttk.Button(pie, text="Ya está en el diario (no crear asiento)",
+                       command=lambda: (setattr(self, "result", "YA"), self.destroy())).pack(side="right", padx=12)
         self.bind("<Escape>", lambda e: self.destroy())
         self.bind("<F2>", lambda e: self.buscar_actual())
         self.actual = self.filas[0] if self.filas else None
@@ -939,7 +942,7 @@ def lineas_auto(gl, op, m):
     return L
 
 
-def asiento_automatico(parent, gl, ref, descr, fecha, op, montos, titulo="Asiento", info=""):
+def asiento_automatico(parent, gl, ref, descr, fecha, op, montos, titulo="Asiento", info="", ya_en_diario=False):
     """Asiento sin ventana. Devuelve (h, lineas, jv_id), False si no lleva asiento, None si se cancela."""
     jv_id = gl.asiento_de(ref)
     if not gl.arranque() or (not jv_id and not gl.contabiliza(fecha)):
@@ -962,10 +965,13 @@ def asiento_automatico(parent, gl, ref, descr, fecha, op, montos, titulo="Asient
         c = gl.cuenta(l["account_id"])
         pre.append(dict(amount=l["amount"], code=c["code"], sub1=None, sub2=None, sub3=None, name=""))
     d = AsientoDialog(parent, gl, jv_id=jv_id, modo="documento", titulo=titulo, info=info, descr=descr,
-                      fecha=fecha, ref=ref, source=ORIGEN.get(ref.split(":")[0], "Facturación"), prellenar=pre)
+                      fecha=fecha, ref=ref, source=ORIGEN.get(ref.split(":")[0], "Facturación"), prellenar=pre,
+                      ya_en_diario=ya_en_diario)
     d.vfecha.set(H["dmy"](fecha if not isinstance(fecha, str) else datetime.date.fromisoformat(fecha)))
     parent.wait_window(d)
     if not d.result:
         return None
+    if d.result == "YA":
+        return "YA"
     h, lineas = d.result
     return h, lineas, jv_id
