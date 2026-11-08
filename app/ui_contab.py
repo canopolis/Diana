@@ -457,9 +457,10 @@ class DiarioTab:
         ttk.Button(top, text="Este año", command=self.este_anio).pack(side="left", padx=4)
         cols = ("Período", "No.", "Origen", "Fecha", "Descripción", "Monto")
         self.tv = ttk.Treeview(fr, columns=cols, show="headings")
-        for c, w in zip(cols, (70, 70, 110, 90, 470, 120)):
+        for c, w in zip(cols, (80, 80, 90, 100, 520, 130)):
             self.tv.heading(c, text=c, command=lambda c=c: self.ordenar(c))
-            self.tv.column(c, width=w, anchor="e" if c in ("No.", "Monto") else "w")
+            self.tv.column(c, width=w, minwidth=w if c != "Descripción" else 200, anchor="center",
+                           stretch=(c == "Descripción"))
         sb = ttk.Scrollbar(fr, orient="vertical", command=self.tv.yview); self.tv.configure(yscrollcommand=sb.set)
         b = ttk.Frame(fr); b.pack(side="bottom", fill="x", pady=4)
         sb.pack(side="right", fill="y"); self.tv.pack(fill="both", expand=True)
