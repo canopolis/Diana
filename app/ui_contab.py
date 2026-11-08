@@ -854,6 +854,12 @@ class ReportesContTab:
         H["fecha_entry"](bl, self.vbloq).grid(row=1, column=1, padx=6)
         ttk.Button(bl, text="Bloquear", command=self.bloquear).grid(row=1, column=2)
         ttk.Button(bl, text="Quitar bloqueo", command=self.desbloquear).grid(row=1, column=3, padx=4)
+        cv = ttk.LabelFrame(imp, text="Cuentas de ventas (para 'Cuadrar valores')", padding=10); cv.pack(anchor="w", fill="x", pady=6)
+        ttk.Label(cv, text="Números separados por coma:").grid(row=0, column=0, sticky="w")
+        self.vctasv = tk.StringVar(value=self.gl.db.cfg("gl_cuentas_ventas") or "")
+        ttk.Entry(cv, textvariable=self.vctasv, width=30).grid(row=0, column=1, padx=6)
+        ttk.Button(cv, text="Guardar", command=lambda: (self.gl.db.set_cfg("gl_cuentas_ventas", self.vctasv.get().strip()),
+                                                        messagebox.showinfo("Cuentas de ventas", "Guardado."))).grid(row=0, column=2)
         o = ttk.LabelFrame(imp, text="Asientos de Facturación", padding=10); o.pack(anchor="w", fill="x", pady=6)
         ttk.Button(o, text="Cuentas automáticas (asientos de Facturación)", width=44,
                    command=lambda: CuentasAutoDialog(self.app.root, self.gl)).pack(anchor="w", pady=2)

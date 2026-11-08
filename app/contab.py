@@ -148,7 +148,7 @@ class Contab:
         r = self.con.execute("SELECT id FROM gl_jv WHERE ref=?", (ref,)).fetchone()
         return r["id"] if r else None
 
-    def _validar(self, fecha, lineas, viejo_fecha=None):
+    def _validar(self, fecha, lineas, viejo_fecha=None, permitir_bloqueadas=False):
         if not lineas:
             raise ValueError("El asiento no tiene líneas.")
         for l in lineas:
@@ -157,7 +157,7 @@ class Contab:
             c = self.cuenta(l["account_id"])
             if not c:
                 raise ValueError("Hay una línea con una cuenta que no existe.")
-            if c["suspended"]:
+            if c["suspended"] and not permitir_bloqueadas:
                 raise ValueError(f"La cuenta {c['code']} {c['name']} está bloqueada y no acepta movimientos.\n"
                                  "Reactívela en el Catálogo de cuentas para usarla.")
         deb = round(sum(l["amount"] for l in lineas if l["amount"] > 0), 2)
@@ -173,12 +173,12 @@ class Contab:
                                 f"(hasta {self.bloqueo()[8:10]}/{self.bloqueo()[5:7]}/{self.bloqueo()[:4]}).")
         return deb
 
-    def guardar_asiento(self, h, lineas, jv_id=None):
+    def guardar_asiento(self, h, lineas, jv_id=None, permitir_bloqueadas=False):
         """h: dict(number, year, period, date 'AAAA-MM-DD', descr, source, ref, auto_reverse).
         lineas: [dict(account_id, sub1, sub2, sub3, amount, name)]. Devuelve el id."""
         lineas = [l for l in lineas if l.get("account_id") and abs(l.get("amount") or 0) > 0.0001]
         viejo = self.con.execute("SELECT * FROM gl_jv WHERE id=?", (jv_id,)).fetchone() if jv_id else None
-        deb = self._validar(h["date"], lineas, viejo["date"] if viejo else None)
+        deb = self._validar(h["date"], lineas, viejo["date"] if viejo else None, permitir_bloqueadas)
         if not h.get("number"):
             h["number"] = viejo["number"] if viejo else self.siguiente_numero()
         dup = self.con.execute("SELECT id FROM gl_jv WHERE number=? AND id<>?", (h["number"], jv_id or 0)).fetchone()
@@ -246,7 +246,9 @@ class Contab:
         h, ls = self.asiento(jid)
         lineas = [dict(account_id=l["account_id"], sub1=l["sub1"], sub2=l["sub2"], sub3=l["sub3"],
                        amount=-l["amount"], name=l["name"]) for l in ls]
-        nid = self.guardar_asiento(dict(date=ymd(fecha), descr=descr, source=h["source"], ref="REV:" + ref), lineas)
+        # el reverso se permite aunque alguna cuenta este bloqueada (solo deshace lo que ya existia)
+        nid = self.guardar_asiento(dict(date=ymd(fecha), descr=descr, source=h["source"], ref="REV:" + ref), lineas,
+                                   permitir_bloqueadas=True)
         # el documento queda libre por si se vuelve a crear con el mismo numero
         self.con.execute("UPDATE gl_jv SET ref=? WHERE id=?", (f"{ref}#anulado{jid}", jid))
         self.con.execute("UPDATE gl_jv SET ref=? WHERE id=?", (f"REV:{ref}#anulado{jid}", nid))

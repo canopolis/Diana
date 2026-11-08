@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.11"
+VERSION = "1.12"
 NOMBRE = "Diana"
 
 
@@ -943,7 +943,7 @@ class DocTab:
         if messagebox.askyesno("Orden de compra", f"¿Marcar la orden {n} como {nuevo}?\n{msg}"):
             if nuevo == "Recibida":
                 h2, ls2, _ = self.db.odoc_full("O", n)
-                fecha = datetime.date.today()
+                fecha = parse_date(h2["date"]) or datetime.date.today()   # fecha de la orden (se puede cambiar antes de OK)
                 asiento = self.app.gl_doc(self.app.root, f"O:{n}", f"Asiento de la compra recibida (orden {n})",
                                           info_documento(self.db, "O", n, dict(h2), [dict(x) for x in ls2], h2["discount"] or 0),
                                           f"Compra recibida orden {n} {h2['name'] or ''}".strip(), fecha,
@@ -1154,6 +1154,15 @@ class App:
             out.append(dict(fecha=p["date"][:10], ref=ref, tipo="Pago a suplidor", titulo=f"Asiento del pago de la compra {p['nro']}",
                             info=f"PAGO A SUPLIDOR con fecha {fd(p['date'])}, compra {p['nro']} (compra con fecha {fd(p['fdate'])})   {p['name'] or ''}\nMonto {m2(p['amount'] or 0)}   Forma: {p['method'] or ''}",
                             descr=f"Pago compra {p['nro']} {p['name'] or ''}".strip(), op="pago", montos=dict(monto=p["amount"] or 0)))
+        for m in db.q("SELECT s.rowid AS id, s.code, s.qty, s.date, s.cost, p.descr FROM stock_moves s "
+                      "LEFT JOIN products p ON p.code=s.code WHERE s.kind='A' AND s.date BETWEEN ? AND ?", (d1, d2)):
+            ref = f"AJ:{m['id']}"
+            if not ok(ref, m["date"]): continue
+            val = round((m["qty"] or 0) * (m["cost"] or 0), 2)
+            out.append(dict(fecha=m["date"][:10], ref=ref, tipo="Ajuste de inventario", titulo=f"Asiento del ajuste de inventario {m['code']}",
+                            info=f"AJUSTE DE INVENTARIO con fecha {fd(m['date'])}   {m['code']} {m['descr'] or ''}\n"
+                                 f"Cantidad {(m['qty'] or 0):+,.2f}   Costo unitario {m2(m['cost'] or 0)}   Valor {m2(val)}",
+                            descr=f"Ajuste inventario {m['code']}", op="ajuste", montos=dict(monto=val)))
         out.sort(key=lambda x: (x["fecha"], x["ref"]))
         return out
 
@@ -1196,7 +1205,7 @@ class App:
                                "WHERE l.account_id=? AND j.date BETWEEN ? AND ?", (cid, d1, d2)).fetchone()[0]
             return round(r or 0, 2)
         # ---- Facturación
-        cxc_f = round(sum(s for _, s in db.open_invoices(None)), 2)
+        cxc_f = round(sum(s for _, s in db.open_invoices(None)), 2)   # saldos a favor van a un pasivo, no restan aqui
         cxp_f = round(sum(s for _, s in db.open_payables(None)), 2)
         exist = db.stock_al(hoy)
         inv_f = round(sum(exist.get(p["code"], 0) * (p["cost"] or 0) for p in db.q("SELECT code, cost FROM products")), 2)
@@ -1213,13 +1222,35 @@ class App:
                  ("Cuentas por pagar (saldo al " + dmy(hoy) + ")", cta("cxp"), cxp_f, round(-sal.get(cta("cxp")["id"], 0), 2), -1)]
         cf, cl = cta("ventas_fiscal"), cta("ventas_libres")
         per = f"del {dmy(parse_date(d1))} al {dmy(hoy)}"
-        if cf["id"] == cl["id"]:
+        # cuentas de ventas que se usan en el diario (se pregunta una vez; se cambia en Configuración > Contabilidad)
+        lista = db.cfg("gl_cuentas_ventas") or ""
+        if not lista:
+            from tkinter import simpledialog
+            lista = simpledialog.askstring("Cuentas de ventas", "¿Qué cuentas de ventas usa en el Diario General?\n"
+                                           "Escriba los números separados por coma (se pregunta una sola vez;\n"
+                                           "se cambia en Configuración > Contabilidad).",
+                                           initialvalue=",".join(dict.fromkeys([cf["code"], cl["code"]])), parent=self.root)
+            if not lista: return
+            db.set_cfg("gl_cuentas_ventas", lista)
+        cods = [x.strip() for x in lista.split(",") if x.strip()]
+        ctas_v = [gl.cuenta_por_codigo(x) for x in cods]
+        if any(c is None for c in ctas_v):
+            messagebox.showwarning("Cuadrar valores", f"Alguna cuenta de ventas no existe: {lista}\n"
+                                   "Corríjala en Configuración > Contabilidad."); return
+        ids_v = {c["id"] for c in ctas_v}
+        if ids_v != {cf["id"], cl["id"]}:
+            # varias cuentas de ventas: se compara el total; el ajuste va a ventas libres (se puede cambiar en la ventana)
+            filas.append((f"Ventas, cuentas {', '.join(cods)} ({per})", cl, round(vf[True] + vf[False], 2),
+                          -round(sum(mov(i) for i in ids_v), 2), -1))
+        elif cf["id"] == cl["id"]:
             filas.append((f"Ventas ({per})", cf, round(vf[True] + vf[False], 2), -mov(cf["id"]), -1))
         else:
             filas.append((f"Ventas con comprobante ({per})", cf, round(vf[True], 2), -mov(cf["id"]), -1))
             filas.append((f"Ventas libres ({per})", cl, round(vf[False], 2), -mov(cl["id"]), -1))
         txt = "\n".join(f"{n}\n     Facturación {m2(f)}    Diario {m2(d)}    Diferencia {m2(round(f - d, 2))}"
                          for n, c, f, d, s in filas)
+        txt += ("\n\nInventario de Facturación = existencia por último costo de compra (igual que el reporte "
+                "'Valor del inventario').")
         difs = [x for x in filas if abs(round(x[2] - x[3], 2)) >= 0.005]
         if not difs:
             messagebox.showinfo("Cuadrar valores Fact & Drio. Gral", txt + "\n\nTodo cuadra. No hace falta ajuste."); return
@@ -1230,6 +1261,12 @@ class App:
         hechos = 0
         for i, (n, c, f, d, s) in enumerate(difs, 1):
             dif = round((f - d) * s, 2)
+            if n.startswith("Inventario") and not messagebox.askyesno(
+                    "Inventario", f"Inventario: Facturación {m2(f)}, Diario {m2(d)}.\n\n"
+                    "Facturación valora la existencia al último costo de compra; el diario acumula el costo real de "
+                    "cada movimiento. Parte o toda la diferencia puede venir solo de ese método.\n\n"
+                    "¿Ajustar igual el diario al valor de Facturación?", default="no"):
+                continue
             pre = [dict(amount=dif, code=c["code"], sub1=None, sub2=None, sub3=None, name=""),
                    dict(amount=-dif, code="", sub1=None, sub2=None, sub3=None, name="")]
             dlg = ui_contab.AsientoDialog(self.root, gl, modo="guardar",
@@ -1848,7 +1885,8 @@ class App:
                               f"Ajuste inventario {code}", datetime.date.today(),
                               "ajuste", dict(monto=round(diff * ((p['cost'] or 0) if p else 0), 2)))
         if asiento is None: return
-        cur = self.db.con.execute("INSERT INTO stock_moves(nro,code,qty,kind) VALUES(0,?,?,'A')", (code, diff)); self.db.con.commit()
+        cur = self.db.con.execute("INSERT INTO stock_moves(nro,code,qty,kind,date,cost) VALUES(0,?,?,'A',?,?)",
+                                  (code, diff, datetime.date.today().isoformat(), (p["cost"] or 0) if p else 0)); self.db.con.commit()
         if asiento and cur.lastrowid != sig:
             asiento[0]["ref"] = f"AJ:{cur.lastrowid}"
         self.gl_grabar(self.root, asiento)
@@ -2167,7 +2205,8 @@ class App:
 
     def rep_path(self, nombre):
         d = self.db.carpeta("R")
-        return os.path.join(d, f"{nombre}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
+        base = nombre[:-4] if nombre.lower().endswith(".pdf") else nombre
+        return os.path.join(d, f"{base}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
 
     def pdf_estado(self):
         try:

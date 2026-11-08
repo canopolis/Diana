@@ -307,6 +307,10 @@ class DB:
         if "kind" not in cols("orig_lines"):
             self.con.execute("ALTER TABLE orig_lines ADD COLUMN kind TEXT DEFAULT 'F'")
         self.con.execute("UPDATE stock_moves SET kind='A' WHERE nro=0 AND kind='F'")
+        if "date" not in cols("stock_moves"):
+            self.con.execute("ALTER TABLE stock_moves ADD COLUMN date TEXT DEFAULT ''")
+        if "cost" not in cols("stock_moves"):
+            self.con.execute("ALTER TABLE stock_moves ADD COLUMN cost REAL DEFAULT 0")
         for col, typ in (("ecf_cod", "TEXT"), ("ecf_firma", "TEXT"), ("ecf_qr", "BLOB")):
             if col not in cols("invoices"):
                 self.con.execute(f"ALTER TABLE invoices ADD COLUMN {col} {typ}")
