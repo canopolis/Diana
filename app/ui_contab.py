@@ -425,6 +425,21 @@ def anular_documento(parent, gl, ref, descr):
 
 
 # =====================================================================================  pestaña Diario General
+def pedir_rango(app, titulo, d1="", d2=""):
+    """Pide siempre Desde / Hasta. Devuelve (iso1, iso2) o None."""
+    hoy = datetime.date.today()
+    r = H["form_dialog"](app.root, titulo, [("d1", "Desde", "date"), ("d2", "Hasta", "date")],
+                         {"d1": d1 or H["dmy"](datetime.date(hoy.year, 1, 1)), "d2": d2 or H["dmy"](hoy)})
+    if not r: return None
+    try:
+        a, b = H["read_dmy"](r["d1"]), H["read_dmy"](r["d2"])
+    except ValueError as e:
+        messagebox.showwarning("Fechas", str(e)); return None
+    if a > b:
+        messagebox.showwarning("Fechas", "La fecha Desde es mayor que Hasta."); return None
+    return a.isoformat(), b.isoformat()
+
+
 class DiarioTab:
     def __init__(self, app):
         self.app = app; self.gl = app.gl
@@ -437,8 +452,9 @@ class DiarioTab:
         ttk.Label(top, text="Hasta").pack(side="left", padx=3); H["fecha_entry"](top, self.vh).pack(side="left")
         ttk.Label(top, text="Buscar").pack(side="left", padx=(10, 3))
         e = ttk.Entry(top, textvariable=self.vs, width=25); e.pack(side="left"); e.bind("<Return>", lambda ev: self.load())
-        ttk.Button(top, text="Mostrar", command=self.load).pack(side="left", padx=4)
-        ttk.Button(top, text="Todo", command=self.todo).pack(side="left")
+        ttk.Button(top, text="Filtrar por esas fechas", command=self.load).pack(side="left", padx=4)
+        ttk.Button(top, text="Ver todos los asientos", command=self.todo).pack(side="left")
+        ttk.Button(top, text="Este año", command=self.este_anio).pack(side="left", padx=4)
         cols = ("Período", "No.", "Origen", "Fecha", "Descripción", "Monto")
         self.tv = ttk.Treeview(fr, columns=cols, show="headings")
         for c, w in zip(cols, (70, 70, 110, 90, 470, 120)):
@@ -452,12 +468,6 @@ class DiarioTab:
                 ("Diario en PDF", self.pdf)]
         for t, cmd in acts:
             ttk.Button(b, text=t, command=cmd).pack(side="left", padx=3)
-        ttk.Separator(b, orient="vertical").pack(side="left", fill="y", padx=8)
-        ttk.Label(b, text="Bloqueado hasta").pack(side="left")
-        self.vbloq = tk.StringVar(value=H["dmy"](self.gl.bloqueo()) if self.gl.bloqueo() else "")
-        H["fecha_entry"](b, self.vbloq).pack(side="left", padx=3)
-        ttk.Button(b, text="Bloquear", command=self.bloquear).pack(side="left")
-        ttk.Button(b, text="Quitar bloqueo", command=self.desbloquear).pack(side="left", padx=3)
         self.lbl = ttk.Label(b, text=""); self.lbl.pack(side="right", padx=8)
         menu_tabla(self.tv, app.root, [("Nuevo", self.nuevo), ("Editar", self.editar), ("Ver asiento", self.editar),
                                        ("Copiar", self.copiar), ("Eliminar", self.eliminar), ("-", None),
@@ -467,9 +477,15 @@ class DiarioTab:
         self.load()
 
     def todo(self):
-        r = self.gl.con.execute("SELECT MIN(date) FROM gl_jv").fetchone()[0]
-        if r: self.vd.set(H["dmy"](r))
-        self.vh.set(H["dmy"](datetime.date.today() + datetime.timedelta(days=366))); self.load()
+        r = self.gl.con.execute("SELECT MIN(date), MAX(date) FROM gl_jv").fetchone()
+        hoy = datetime.date.today()
+        if r[0]: self.vd.set(H["dmy"](r[0]))
+        fin = max(datetime.date.fromisoformat(str(r[1])[:10]), hoy) if r[1] else hoy
+        self.vh.set(H["dmy"](fin)); self.vs.set(""); self.load()
+
+    def este_anio(self):
+        hoy = datetime.date.today()
+        self.vd.set(H["dmy"](datetime.date(hoy.year, 1, 1))); self.vh.set(H["dmy"](hoy)); self.load()
 
     def ordenar(self, c):
         k = {"Período": "year*100+period", "No.": "number", "Origen": "source", "Fecha": "date",
@@ -546,10 +562,9 @@ class DiarioTab:
             self.app.refresh_all()
 
     def pdf(self):
-        try:
-            d1 = H["read_dmy"](self.vd.get()).isoformat(); d2 = H["read_dmy"](self.vh.get()).isoformat()
-        except ValueError as e:
-            messagebox.showwarning("Fechas", str(e)); return
+        rg = pedir_rango(self.app, "Diario General en PDF", self.vd.get(), self.vh.get())
+        if not rg: return
+        d1, d2 = rg
         ruta = self.app.rep_path(f"diario_{d1}_{d2}.pdf")
         try:
             rep_contab.diario(self.gl, d1, d2, ruta)
@@ -557,73 +572,12 @@ class DiarioTab:
             messagebox.showwarning("PDF", "Ese PDF está abierto. Ciérrelo y vuelva a intentar."); return
         H["open_file"](ruta)
 
-    def bloquear(self):
-        try:
-            d = H["read_dmy"](self.vbloq.get())
-        except ValueError as e:
-            messagebox.showwarning("Bloqueo", str(e)); return
-        if messagebox.askyesno("Bloqueo", f"Nadie podrá grabar, cambiar ni borrar asientos con fecha hasta el "
-                                          f"{H['dmy'](d)} (inclusive), ni aquí ni desde Facturación, sin desbloquear antes.\n\n¿Bloquear?"):
-            self.gl.set_bloqueo(d); messagebox.showinfo("Bloqueo", f"Bloqueado hasta {H['dmy'](d)}.")
-
-    def desbloquear(self):
-        if not self.gl.bloqueo():
-            messagebox.showinfo("Bloqueo", "No hay bloqueo."); return
-        if messagebox.askyesno("Bloqueo", f"¿Quitar el bloqueo (estaba hasta {H['dmy'](self.gl.bloqueo())})?"):
-            self.gl.set_bloqueo(None); self.vbloq.set(""); messagebox.showinfo("Bloqueo", "Sin bloqueo.")
-
-
-# =====================================================================================  pestaña Catálogo de cuentas
-class CuentaDialog(tk.Toplevel):
-    def __init__(self, parent, gl, cid=None):
-        super().__init__(parent)
-        self.gl = gl; self.cid = cid; self.result = None
-        c = gl.cuenta(cid) if cid else None
-        self.title("Editar cuenta" if c else "Nueva cuenta"); self.transient(parent); self.grab_set(); self.resizable(False, False)
-        nb = ttk.Notebook(self); nb.pack(fill="both", expand=True, padx=8, pady=8)
-        g = ttk.Frame(nb, padding=16); nb.add(g, text="General")
-        nt = ttk.Frame(nb, padding=8); nb.add(nt, text="Notas")
-        self.vcode = tk.StringVar(value=c["code"] if c else ""); self.vname = tk.StringVar(value=c["name"] if c else "")
-        self.vsus = tk.IntVar(value=c["suspended"] if c else 0); self.vtipo = tk.IntVar(value=c["type"] if c else 0)
-        self.vret = tk.IntVar(value=c["retained"] if c else 0)
-        ttk.Label(g, text="No. de cuenta:").grid(row=0, column=0, sticky="e", padx=4, pady=4)
-        e = ttk.Entry(g, textvariable=self.vcode, width=14); e.grid(row=0, column=1, sticky="w"); e.focus_set()
-        ttk.Checkbutton(g, text="Suspendida", variable=self.vsus).grid(row=0, column=2, sticky="w", padx=12)
-        ttk.Label(g, text="Nombre:").grid(row=1, column=0, sticky="e", padx=4, pady=4)
-        ttk.Entry(g, textvariable=self.vname, width=46).grid(row=1, column=1, columnspan=2, sticky="w")
-        tf = ttk.LabelFrame(g, text="Tipo", padding=8); tf.grid(row=2, column=1, columnspan=2, sticky="w", pady=8)
-        for i, (k, t) in enumerate(TIPOS_CTA.items()):
-            ttk.Radiobutton(tf, text=t, value=k, variable=self.vtipo, command=self._tipo).grid(row=i, column=0, sticky="w")
-        self.cret = ttk.Checkbutton(tf, text="Ganancias retenidas", variable=self.vret)
-        self.cret.grid(row=4, column=1, sticky="w", padx=10)
-        self.txt = tk.Text(nt, width=60, height=10); self.txt.pack(fill="both", expand=True)
-        if c and c["notes"]: self.txt.insert("1.0", c["notes"])
-        bf = ttk.Frame(self, padding=8); bf.pack(fill="x")
-        ttk.Button(bf, text="Cancelar", command=self.destroy).pack(side="right", padx=3)
-        ttk.Button(bf, text="OK", command=self.ok).pack(side="right", padx=3)
-        self.bind("<Return>", lambda e: self.ok() if not isinstance(e.widget, tk.Text) else None)
-        self.bind("<Escape>", lambda e: self.destroy())
-        self._tipo()
-
-    def _tipo(self):
-        if self.vtipo.get() == 5:
-            self.cret.state(["!disabled"])
-        else:
-            self.vret.set(0); self.cret.state(["disabled"])
-
-    def ok(self):
-        try:
-            self.result = self.gl.guardar_cuenta(self.cid, self.vcode.get(), self.vname.get(), self.vtipo.get(),
-                                                 self.vret.get(), self.vsus.get(), self.txt.get("1.0", "end-1c"))
-        except ValueError as e:
-            messagebox.showwarning("Cuenta", str(e), parent=self); return
-        self.destroy()
-
 
 class CuentasTab:
-    def __init__(self, app):
+    def __init__(self, app, nb=None):
         self.app = app; self.gl = app.gl
-        fr = ttk.Frame(app.nb); app.nb.add(fr, text="Catálogo de cuentas")
+        nb = nb or app.nb
+        fr = ttk.Frame(nb); nb.add(fr, text="Catálogo de cuentas")
         top = ttk.Frame(fr); top.pack(fill="x", pady=4)
         self.vs = tk.StringVar(); self.vtipo = tk.StringVar(value="Todas")
         ttk.Label(top, text="Buscar").pack(side="left", padx=3)
@@ -742,11 +696,12 @@ class CuentasTab:
 
 # =====================================================================================  pestaña Reportes contables
 class ReportesContTab:
-    def __init__(self, app):
+    """Reportes contables (van dentro de la pestaña Reportes) y ajustes de contabilidad (van en Configuración)."""
+    def __init__(self, app, rep_parent, cfg_nb):
         self.app = app; self.gl = app.gl
-        fr = ttk.Frame(app.nb); app.nb.add(fr, text="Reportes contables")
-        box = ttk.Frame(fr, padding=20); box.pack(anchor="nw")
         hoy = datetime.date.today()
+        # ---- reportes contables, dentro de la pestaña Reportes
+        box = ttk.LabelFrame(rep_parent, text="Reportes contables", padding=12); box.pack(anchor="nw", fill="x")
         self.vper = tk.StringVar(value=str(hoy.month)); self.vyear = tk.StringVar(value=str(hoy.year))
         pf = ttk.Frame(box); pf.pack(anchor="w", pady=(0, 10))
         ttk.Label(pf, text="Período").pack(side="left")
@@ -757,21 +712,77 @@ class ReportesContTab:
                            ("Balance General", rep_contab.balance_general, "balance_general"),
                            ("Balanza de comprobación", rep_contab.balanza, "balanza")):
             ttk.Button(box, text=t, width=40, command=lambda fn=fn, nom=nom: self.run(fn, nom)).pack(anchor="w", pady=3)
-        ttk.Label(box, text="El Diario General en PDF está en la pestaña Diario General; el Mayor de una cuenta,\n"
-                            "en Catálogo de cuentas.\n\nAño continuo: no hay que cerrar el año. Los ingresos y gastos "
-                            "empiezan en cero cada 1 de enero\ny el resultado de años anteriores se presenta en Ganancias retenidas.",
-                  justify="left").pack(anchor="w", pady=14)
-        imp = ttk.LabelFrame(box, text="Contabilidad", padding=10); imp.pack(anchor="w", fill="x", pady=6)
-        ttk.Label(imp, text="Fecha de arranque (desde aquí cada documento de Facturación pide su asiento):").grid(row=0, column=0, sticky="w")
+        ttk.Button(box, text="Diario General (PDF)", width=40, command=self.diario_pdf).pack(anchor="w", pady=3)
+        ttk.Button(box, text="Mayor de una cuenta (PDF)", width=40, command=self.mayor_pdf).pack(anchor="w", pady=3)
+        ttk.Label(box, text="Año continuo: no hay que cerrar el año.\nLos ingresos y gastos empiezan en cero cada 1 de enero\n"
+                            "y lo de años anteriores sale en Ganancias retenidas.",
+                  justify="left", foreground="#555").pack(anchor="w", pady=(10, 0))
+        # ---- ajustes de contabilidad, dentro de Configuración
+        fr = ttk.Frame(cfg_nb); cfg_nb.add(fr, text="Contabilidad")
+        imp = ttk.Frame(fr, padding=20); imp.pack(anchor="nw", fill="x")
+        a = ttk.LabelFrame(imp, text="Fecha de arranque", padding=10); a.pack(anchor="w", fill="x", pady=6)
+        ttk.Label(a, text="Desde esta fecha cada documento de Facturación pide su asiento:").grid(row=0, column=0, sticky="w")
         self.varr = tk.StringVar(value=H["dmy"](self.gl.arranque()) if self.gl.arranque() else "")
-        H["fecha_entry"](imp, self.varr).grid(row=0, column=1, padx=6)
-        ttk.Button(imp, text="Guardar", command=self.guardar_arranque).grid(row=0, column=2)
-        ttk.Button(imp, text="Cuentas automáticas (asientos de Facturación)", width=40,
-                   command=lambda: CuentasAutoDialog(self.app.root, self.gl)).grid(row=3, column=0, sticky="w", pady=(10, 0))
-        ttk.Button(imp, text="Importar contabilidad anterior (.zip)", width=40,
-                   command=lambda: self.importar(True)).grid(row=1, column=0, sticky="w", pady=(10, 2))
-        ttk.Button(imp, text="Importar contabilidad anterior (carpeta)", width=40,
-                   command=lambda: self.importar(False)).grid(row=2, column=0, sticky="w")
+        H["fecha_entry"](a, self.varr).grid(row=0, column=1, padx=6)
+        ttk.Button(a, text="Guardar", command=self.guardar_arranque).grid(row=0, column=2)
+        bl = ttk.LabelFrame(imp, text="Bloquear meses ya cerrados", padding=10); bl.pack(anchor="w", fill="x", pady=6)
+        ttk.Label(bl, text="Sirve para que nadie cambie por error lo que ya está cuadrado y declarado.\n"
+                           "Ningún asiento con fecha igual o anterior a la fecha de bloqueo se puede grabar, cambiar ni\n"
+                           "borrar (tampoco desde Facturación) hasta que se quite el bloqueo. Vacío = sin bloqueo.",
+                  justify="left").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 6))
+        ttk.Label(bl, text="Bloqueado hasta").grid(row=1, column=0, sticky="w")
+        self.vbloq = tk.StringVar(value=H["dmy"](self.gl.bloqueo()) if self.gl.bloqueo() else "")
+        H["fecha_entry"](bl, self.vbloq).grid(row=1, column=1, padx=6)
+        ttk.Button(bl, text="Bloquear", command=self.bloquear).grid(row=1, column=2)
+        ttk.Button(bl, text="Quitar bloqueo", command=self.desbloquear).grid(row=1, column=3, padx=4)
+        o = ttk.LabelFrame(imp, text="Asientos de Facturación e importación", padding=10); o.pack(anchor="w", fill="x", pady=6)
+        ttk.Button(o, text="Cuentas automáticas (asientos de Facturación)", width=44,
+                   command=lambda: CuentasAutoDialog(self.app.root, self.gl)).pack(anchor="w", pady=2)
+        ttk.Button(o, text="Importar contabilidad anterior (.zip)", width=44,
+                   command=lambda: self.importar(True)).pack(anchor="w", pady=2)
+        ttk.Button(o, text="Importar contabilidad anterior (carpeta)", width=44,
+                   command=lambda: self.importar(False)).pack(anchor="w", pady=2)
+
+    def diario_pdf(self):
+        rg = pedir_rango(self.app, "Diario General en PDF")
+        if not rg: return
+        ruta = self.app.rep_path(f"diario_{rg[0]}_{rg[1]}.pdf")
+        try:
+            rep_contab.diario(self.gl, rg[0], rg[1], ruta)
+        except PermissionError:
+            messagebox.showwarning("PDF", "Ese PDF está abierto. Ciérrelo y vuelva a intentar."); return
+        H["open_file"](ruta)
+
+    def mayor_pdf(self):
+        rows = [(c["code"], c["name"]) for c in self.gl.con.execute(
+            "SELECT code, name FROM gl_accounts ORDER BY code").fetchall()]
+        p = H["Picker"](self.app.root, "Mayor de una cuenta: elija la cuenta", ("Código", "Cuenta"), rows, [120, 560])
+        if not p.result: return
+        c = self.gl.cuenta_por_codigo(p.result[0])
+        if not c: return
+        rg = pedir_rango(self.app, "Mayor de la cuenta " + c["code"])
+        if not rg: return
+        ruta = self.app.rep_path(f"mayor_{c['code']}_{rg[0]}_{rg[1]}.pdf")
+        try:
+            rep_contab.mayor(self.gl, c["id"], rg[0], rg[1], ruta)
+        except PermissionError:
+            messagebox.showwarning("PDF", "Ese PDF está abierto. Ciérrelo y vuelva a intentar."); return
+        H["open_file"](ruta)
+
+    def bloquear(self):
+        try:
+            d = H["read_dmy"](self.vbloq.get())
+        except ValueError as e:
+            messagebox.showwarning("Bloqueo", str(e)); return
+        if messagebox.askyesno("Bloqueo", f"Nadie podrá grabar, cambiar ni borrar asientos con fecha hasta el "
+                                          f"{H['dmy'](d)} (inclusive), ni aquí ni desde Facturación, sin quitar el bloqueo antes.\n\n¿Bloquear?"):
+            self.gl.set_bloqueo(d); messagebox.showinfo("Bloqueo", f"Bloqueado hasta {H['dmy'](d)}.")
+
+    def desbloquear(self):
+        if not self.gl.bloqueo():
+            messagebox.showinfo("Bloqueo", "No hay bloqueo."); return
+        if messagebox.askyesno("Bloqueo", f"¿Quitar el bloqueo (estaba hasta {H['dmy'](self.gl.bloqueo())})?"):
+            self.gl.set_bloqueo(None); self.vbloq.set(""); messagebox.showinfo("Bloqueo", "Sin bloqueo.")
 
     def run(self, fn, nom):
         try:
@@ -937,7 +948,7 @@ def asiento_automatico(parent, gl, ref, descr, fecha, op, montos, titulo="Asient
     faltan = [k for k in NECESITA[op] if not cta_auto(gl, k)]
     if faltan:
         d = CuentasAutoDialog(parent, gl, faltan, "Esto se pregunta una sola vez. Desde ahora el asiento de esta operación\n"
-                                                  "se hace solo con estas cuentas (se cambian en Reportes contables > Cuentas automáticas).")
+                                                  "se hace solo con estas cuentas (se cambian en Configuración > Contabilidad > Cuentas automáticas).")
         parent.wait_window(d)
         if not d.ok_:
             return None

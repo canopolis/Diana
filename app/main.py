@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.0"
+VERSION = "1.1"
 NOMBRE = "Diana"
 
 
@@ -963,7 +963,7 @@ class DocTab:
             messagebox.showinfo("NCF", f"Ya tiene NCF {h['ncf']}."); return
         ncf = self.db.assign_odoc_ncf(self.kind, n)
         if not ncf:
-            messagebox.showwarning("NCF", "No hay comprobantes disponibles. Agregue la secuencia en 'Comprobantes'.")
+            messagebox.showwarning("NCF", "No hay comprobantes disponibles. Agregue la secuencia en 'Configuración > Comprobantes (NCF)'.")
         else:
             gen_doc(self.db, self.kind, n, self.app.doc_path(self.kind, n)); messagebox.showinfo("NCF", f"NCF {ncf}")
         self.app.refresh_all()
@@ -1081,9 +1081,9 @@ class App:
         self.tab_cxp(ttk.Frame(nb))
         self.docs = {k: DocTab(self, k) for k in ("Q", "G", "O", "NC", "ND")}
         self.diario = ui_contab.DiarioTab(self)
-        self.catalogo = ui_contab.CuentasTab(self)
-        self.rep_cont = ui_contab.ReportesContTab(self)
-        self.tab_reportes(ttk.Frame(nb)); self.tab_seq(ttk.Frame(nb)); self.tab_respaldo(ttk.Frame(nb)); self.tab_config(ttk.Frame(nb))
+        self.tab_reportes(ttk.Frame(nb)); self.tab_respaldo(ttk.Frame(nb)); self.tab_config(ttk.Frame(nb))
+        self.catalogo = ui_contab.CuentasTab(self, self.nb_cfg)
+        self.rep_cont = ui_contab.ReportesContTab(self, self.rep_cont_box, self.nb_cfg)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.refresh_all()
         if not self.db.one("SELECT 1 FROM invoices LIMIT 1"):
@@ -1455,7 +1455,7 @@ class App:
         tipo = next((t for t in (1, 2, 14, 15, 16) if tipo_nombre(t) == r["tipo"]), 1)
         ncf = self.db.assign_ncf(n, tipo)
         if not ncf:
-            messagebox.showwarning("NCF", "No hay comprobantes disponibles de ese tipo. Agregue la secuencia en 'Comprobantes'.")
+            messagebox.showwarning("NCF", "No hay comprobantes disponibles de ese tipo. Agregue la secuencia en 'Configuración > Comprobantes (NCF)'.")
         else:
             generar_factura(self.db, n, self.pdf_path(n))
             messagebox.showinfo("NCF", f"Factura {n}: NCF {ncf}")
@@ -1973,7 +1973,8 @@ class App:
     # ----- Reportes -----
     def tab_reportes(self, fr):
         self.nb.add(fr, text="Reportes")
-        box = ttk.Frame(fr); box.pack(anchor="nw", padx=20, pady=16)
+        box = ttk.LabelFrame(fr, text="Reportes de facturación", padding=12); box.pack(side="left", anchor="nw", padx=(20, 10), pady=16)
+        self.rep_cont_box = ttk.Frame(fr); self.rep_cont_box.pack(side="left", anchor="nw", padx=10, pady=16)
         hoy = datetime.date.today()
         self.rd = tk.StringVar(value=dmy(hoy.replace(day=1))); self.rh = tk.StringVar(value=dmy(hoy))
         ttk.Label(box, text="Desde").grid(row=0, column=0, sticky="e"); fecha_entry(box, self.rd, 12).grid(row=0, column=1, sticky="w", padx=4)
@@ -2048,8 +2049,8 @@ class App:
         self.root.config(cursor=""); open_file(ruta)
 
     # ----- Comprobantes -----
-    def tab_seq(self, fr):
-        self.nb.add(fr, text="Comprobantes (NCF)")
+    def tab_seq(self, fr, nb):
+        nb.add(fr, text="Comprobantes (NCF)")
         top = ttk.Frame(fr); top.pack(fill="x", pady=4)
         ttk.Button(top, text="Agregar secuencia nueva", command=lambda: self.edit_seq(None)).pack(side="left", padx=3)
         ttk.Button(top, text="Editar", command=lambda: self.edit_seq(self.sel_s(), True)).pack(side="left", padx=3)
@@ -2222,7 +2223,10 @@ class App:
     # ----- Configuracion -----
     def tab_config(self, fr):
         self.nb.add(fr, text="Configuración")
-        box = ttk.Frame(fr); box.pack(anchor="nw", padx=20, pady=20)
+        self.nb_cfg = ttk.Notebook(fr); self.nb_cfg.pack(fill="both", expand=True, padx=4, pady=4)
+        emp = ttk.Frame(self.nb_cfg); self.nb_cfg.add(emp, text="Empresa")
+        self.tab_seq(ttk.Frame(self.nb_cfg), self.nb_cfg)
+        box = ttk.Frame(emp); box.pack(anchor="nw", padx=20, pady=20)
         items = [("emp_nombre", "Nombre de la empresa"), ("emp_l1", "Línea 1"), ("emp_l2", "Línea 2"), ("emp_l3", "Línea 3"),
                  ("emp_l4", "Línea 4"), ("emp_l5", "Línea 5"), ("lugar", "Lugar de expedición"), ("envio", "Envío (por defecto)"),
                  ("coment2", "Comentario 2 (por defecto)"), ("coment3", "Comentario 3 (por defecto)"),
