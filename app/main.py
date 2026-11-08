@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.16"
+VERSION = "1.17"
 NOMBRE = "Diana"
 
 
@@ -1099,6 +1099,59 @@ class App:
     def gl_grabar(self, parent, r):
         if r:
             ui_contab.grabar_asiento_documento(parent, self.gl, r)
+            ref = (r[0] or {}).get("ref") or ""
+            if ref.startswith("F:"):
+                try:
+                    self.cobradas_directo([int(ref[2:])], parent)
+                except ValueError:
+                    pass
+
+    def cobradas_directo(self, nros, parent=None):
+        """Facturas cuyo asiento no pasa por Cuentas por cobrar (venta cobrada directo a banco/caja) y que en
+        Facturación siguen con saldo: pregunta si se marcan como pagadas. El cobro se registra en Facturación
+        SIN otro asiento (el dinero ya entró con el asiento de la factura)."""
+        gl, db = self.gl, self.db
+        cxc = ui_contab.cta_auto(gl, "cxc")
+        if not cxc: return 0
+        gl.con.execute("CREATE TABLE IF NOT EXISTS gl_ya_en_diario(ref TEXT PRIMARY KEY, fecha TEXT)")
+        hechos = 0
+        for n in nros:
+            jid = gl.asiento_de(f"F:{n}")
+            if not jid: continue
+            if gl.con.execute("SELECT 1 FROM gl_lines WHERE jv_id=? AND account_id=?", (jid, cxc)).fetchone(): continue
+            saldo = db.invoice_saldo(n)
+            if saldo <= 0.005: continue
+            inv = db.one("SELECT date, name FROM invoices WHERE nro=?", (n,))
+            if not messagebox.askyesno("Venta cobrada directo",
+                                       f"El asiento de la factura {n} {inv['name'] or ''} no pasa por Cuentas por cobrar "
+                                       f"(se cobró directo).\nEn Facturación sigue pendiente de pago: {m2(saldo)}.\n\n"
+                                       "¿Marcarla como pagada en Facturación?\n(No se crea otro asiento: el cobro ya está "
+                                       "en el asiento de la factura.)", parent=parent or self.root):
+                continue
+            db.add_payment(n, saldo, "Contado", parse_date(inv["date"]) or datetime.date.today(),
+                           "Cobrada directo en el asiento de la factura")
+            pid = db.one("SELECT MAX(id) FROM payments")[0]
+            gl.con.execute("INSERT OR REPLACE INTO gl_ya_en_diario(ref, fecha) VALUES(?,?)",
+                           (f"PAGO:{pid}", datetime.date.today().isoformat())); gl.con.commit()
+            hechos += 1
+        if hechos: self.refresh_all()
+        return hechos
+
+    def facturas_cobradas_directo(self):
+        """Facturas con asiento sin Cuentas por cobrar y con saldo en Facturación (para revisarlas)."""
+        cxc = ui_contab.cta_auto(self.gl, "cxc")
+        if not cxc: return []
+        out = []
+        for r in self.gl.con.execute("SELECT id, ref FROM gl_jv WHERE ref LIKE 'F:%'").fetchall():
+            try:
+                n = int(r["ref"][2:])
+            except ValueError:
+                continue
+            if self.gl.con.execute("SELECT 1 FROM gl_lines WHERE jv_id=? AND account_id=?", (r["id"], cxc)).fetchone():
+                continue
+            if self.db.invoice_saldo(n) > 0.005:
+                out.append(n)
+        return out
 
     # ----- contabilizar asientos pendientes -----
     def pendientes_contables(self, d1, d2):
@@ -1348,6 +1401,7 @@ class App:
         if not a: return False
         try:
             if self.pendientes_contables(a, datetime.date.today().isoformat()): return True
+            if self.facturas_cobradas_directo(): return True
             return bool(self.cuadrar_valores(solo_revisar=True))
         except Exception:
             return False
@@ -1361,6 +1415,9 @@ class App:
                                    "Cada asiento lo aprueba, lo cambia o lo rechaza usted.\n\n¿Empezar?"):
             return
         self.contabilizar_pendientes()
+        directas = self.facturas_cobradas_directo()
+        if directas:
+            self.cobradas_directo(directas)
         self.cuadrar_valores()
         self.refresh_all()
 
