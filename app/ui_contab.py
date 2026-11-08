@@ -485,11 +485,15 @@ class DiarioTab:
             ttk.Button(b, text=t, command=cmd).pack(side="left", padx=3)
         self.lbl = ttk.Label(b, text=""); self.lbl.pack(side="right", padx=8)
         # se activa y parpadea solo cuando hay balance en 2da caja chica o en tránsito
-        # un solo botón para todo; parpadea cuando hay balance por depositar en 2da caja chica / en tránsito
-        self.btn_dep = tk.Button(b, text="Revisar Facturación y Diario", command=self.revisar_todo,
+        # parpadea si hay asientos pendientes de Facturación o diferencias por cuadrar
+        self.btn_rev = tk.Button(b, text="Revisar Facturación y Diario", command=self.revisar_todo,
                                  relief="raised", padx=10, pady=4)
+        self.btn_rev.pack(side="left", padx=3)
+        # parpadea solo si hay balance por depositar (desde la fecha de arranque); si está gris, no hay
+        self.btn_dep = tk.Button(b, text="Depositar balance\n2da caja chica / en tránsito", command=self.pasar_balances,
+                                 state="disabled", relief="raised", padx=8)
         self.btn_dep.pack(side="left", padx=3)
-        self._dep_bg = self.btn_dep.cget("bg"); self._dep_on = False; self._dep_tick = False
+        self._dep_bg = self.btn_dep.cget("bg"); self._dep_on = False; self._rev_on = False; self._dep_tick = False
         self._parpadeo()
         menu_tabla(self.tv, app.root, [("Nuevo", self.nuevo), ("Editar", self.editar), ("Ver asiento", self.editar),
                                        ("Copiar", self.copiar), ("Eliminar", self.eliminar), ("-", None),
@@ -535,18 +539,26 @@ class DiarioTab:
     def aviso_balances(self):
         """El botón 'Revisar Facturación y Diario' parpadea si hay algo pendiente de aplicar."""
         try:
-            bal = self.app.hay_pendientes()
+            self._rev_on = bool(self.app.hay_pendientes())
         except Exception:
-            bal = False
+            self._rev_on = False
+        try:
+            bal = self.app.balances_por_pasar()
+        except Exception:
+            bal = []
         self._dep_on = bool(bal)
+        self.btn_dep.config(state="normal" if bal else "disabled")
         if not bal:
             self.btn_dep.config(bg=self._dep_bg, fg="black")
+        if not self._rev_on:
+            self.btn_rev.config(bg=self._dep_bg, fg="black")
 
     def _parpadeo(self):
-        if self._dep_on:
-            self._dep_tick = not self._dep_tick
-            self.btn_dep.config(bg="#d93025" if self._dep_tick else "#ffd54f", fg="white" if self._dep_tick else "black",
-                                activebackground="#ffd54f")
+        self._dep_tick = not self._dep_tick
+        for on, btn in ((self._dep_on, self.btn_dep), (self._rev_on, self.btn_rev)):
+            if on:
+                btn.config(bg="#d93025" if self._dep_tick else "#ffd54f", fg="white" if self._dep_tick else "black",
+                           activebackground="#ffd54f")
         try:
             self.btn_dep.after(600, self._parpadeo)
         except tk.TclError:

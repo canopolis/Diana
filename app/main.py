@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.14"
+VERSION = "1.15"
 NOMBRE = "Diana"
 
 
@@ -1343,7 +1343,6 @@ class App:
         if not a: return False
         try:
             if self.pendientes_contables(a, datetime.date.today().isoformat()): return True
-            if self.balances_por_pasar(): return True
             return bool(self.cuadrar_valores(solo_revisar=True))
         except Exception:
             return False
@@ -1353,13 +1352,10 @@ class App:
         3) cuadre de valores Facturación vs Diario General."""
         if not messagebox.askyesno("Revisar Facturación y Diario",
                                    "Se hace en orden:\n\n   1. Asientos pendientes de Facturación\n"
-                                   "   2. Depositar balance 2da caja chica / en tránsito\n"
-                                   "   3. Cuadrar valores Facturación y Diario General\n\n"
+                                   "   2. Cuadrar valores Facturación y Diario General\n\n"
                                    "Cada asiento lo aprueba, lo cambia o lo rechaza usted.\n\n¿Empezar?"):
             return
         self.contabilizar_pendientes()
-        if self.balances_por_pasar():
-            self.pasar_caja_chica()
         self.cuadrar_valores()
         self.refresh_all()
 
