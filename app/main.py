@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.10"
+VERSION = "1.11"
 NOMBRE = "Diana"
 
 
@@ -1172,38 +1172,77 @@ class App:
                 if v > 0: out.append((c, v))
         return out
 
-    def cuadrar_cxc(self):
-        """Compara Cuentas por cobrar de Facturación (lo que manda) con la cuenta CxC del Diario General
-        y prepara el asiento de ajuste por la diferencia. Siempre se revisa y se aprueba con OK."""
-        gl = self.gl; hoy = datetime.date.today()
-        cid = ui_contab.cta_auto(gl, "cxc")
-        if not cid:
-            messagebox.showwarning("Cuadrar CxC", "Falta la cuenta de Cuentas por cobrar en "
-                                   "Configuración > Contabilidad > Cuentas automáticas."); return
-        cta = gl.cuenta(cid)
-        fact = round(sum(s for _, s in self.db.open_invoices(None)), 2)
-        diario = round(dict((c["id"], v) for c, v in gl.balanza(hoy.year, hoy.month)).get(cid, 0), 2)
-        dif = round(fact - diario, 2)
-        txt = (f"Cuentas por cobrar al {dmy(hoy)}\n\n"
-               f"   Facturación (correcto):   {m2(fact)}\n"
-               f"   Diario General ({cta['code']} {cta['name']}):   {m2(diario)}\n"
-               f"   Diferencia:   {m2(dif)}")
-        if abs(dif) < 0.005:
-            messagebox.showinfo("Cuadrar CxC", txt + "\n\nEstán cuadradas. No hace falta ajuste."); return
-        if not messagebox.askyesno("Cuadrar CxC", txt + "\n\n¿Preparar el asiento de ajuste para que el Diario General "
-                                   "quede igual a Facturación?\n(En la ventana elija la cuenta de contrapartida y dé OK.)"):
+    def cuadrar_valores(self):
+        """Cuadrar valores Fact & Drio. Gral: compara Ventas, Inventario, CxC y CxP de Facturación (lo que manda)
+        con el Diario General y sugiere un asiento de ajuste por cada diferencia. Cada asiento se aprueba (OK),
+        se cambia y se aprueba, o se rechaza (Cancelar = no se graba y la diferencia sigue)."""
+        gl, db = self.gl, self.db
+        hoy = datetime.date.today()
+        if not gl.arranque():
+            messagebox.showwarning("Cuadrar valores", "Falta la fecha de arranque en Configuración > Contabilidad."); return
+        d1 = gl.arranque()[:10]; d2 = hoy.isoformat()
+        def cta(k):
+            c = ui_contab.cta_auto(gl, k)
+            return gl.cuenta(c) if c else None
+        faltan = [n for k, n in (("cxc", "Cuentas por cobrar"), ("cxp", "Cuentas por pagar a suplidores"),
+                                 ("inventario", "Inventario"), ("ventas_fiscal", "Ventas con comprobante"),
+                                 ("ventas_libres", "Ventas libres")) if not cta(k)]
+        if faltan:
+            messagebox.showwarning("Cuadrar valores", "Faltan estas cuentas en Configuración > Contabilidad > "
+                                   "Cuentas automáticas:\n   " + "\n   ".join(faltan)); return
+        sal = dict((c["id"], v) for c, v in gl.balanza(hoy.year, hoy.month))
+        def mov(cid):
+            r = gl.con.execute("SELECT COALESCE(SUM(l.amount),0) FROM gl_lines l JOIN gl_jv j ON j.id=l.jv_id "
+                               "WHERE l.account_id=? AND j.date BETWEEN ? AND ?", (cid, d1, d2)).fetchone()[0]
+            return round(r or 0, 2)
+        # ---- Facturación
+        cxc_f = round(sum(s for _, s in db.open_invoices(None)), 2)
+        cxp_f = round(sum(s for _, s in db.open_payables(None)), 2)
+        exist = db.stock_al(hoy)
+        inv_f = round(sum(exist.get(p["code"], 0) * (p["cost"] or 0) for p in db.q("SELECT code, cost FROM products")), 2)
+        vf = {True: 0.0, False: 0.0}
+        for r in db.q("SELECT subtotal, discount, tipo FROM invoices WHERE deleted=0 AND date BETWEEN ? AND ?", (d1, d2)):
+            vf[(r["tipo"] or 0) != 0] += (r["subtotal"] or 0) - (r["discount"] or 0)
+        for r in db.q("SELECT o.kind, o.subtotal, o.discount, i.tipo FROM odocs o LEFT JOIN invoices i ON i.nro=o.factura "
+                      "WHERE o.kind IN ('NC','ND') AND o.deleted=0 AND o.date BETWEEN ? AND ?", (d1, d2)):
+            neto = (r["subtotal"] or 0) - (r["discount"] or 0)
+            vf[(r["tipo"] or 0) != 0] += neto if r["kind"] == "ND" else -neto
+        # ---- conceptos: (nombre, cuenta, facturación, diario, signo)  signo 1 = saldo deudor, -1 = acreedor
+        filas = [("Cuentas por cobrar (saldo al " + dmy(hoy) + ")", cta("cxc"), cxc_f, round(sal.get(cta("cxc")["id"], 0), 2), 1),
+                 ("Inventario (valor al " + dmy(hoy) + ")", cta("inventario"), inv_f, round(sal.get(cta("inventario")["id"], 0), 2), 1),
+                 ("Cuentas por pagar (saldo al " + dmy(hoy) + ")", cta("cxp"), cxp_f, round(-sal.get(cta("cxp")["id"], 0), 2), -1)]
+        cf, cl = cta("ventas_fiscal"), cta("ventas_libres")
+        per = f"del {dmy(parse_date(d1))} al {dmy(hoy)}"
+        if cf["id"] == cl["id"]:
+            filas.append((f"Ventas ({per})", cf, round(vf[True] + vf[False], 2), -mov(cf["id"]), -1))
+        else:
+            filas.append((f"Ventas con comprobante ({per})", cf, round(vf[True], 2), -mov(cf["id"]), -1))
+            filas.append((f"Ventas libres ({per})", cl, round(vf[False], 2), -mov(cl["id"]), -1))
+        txt = "\n".join(f"{n}\n     Facturación {m2(f)}    Diario {m2(d)}    Diferencia {m2(round(f - d, 2))}"
+                         for n, c, f, d, s in filas)
+        difs = [x for x in filas if abs(round(x[2] - x[3], 2)) >= 0.005]
+        if not difs:
+            messagebox.showinfo("Cuadrar valores Fact & Drio. Gral", txt + "\n\nTodo cuadra. No hace falta ajuste."); return
+        if not messagebox.askyesno("Cuadrar valores Fact & Drio. Gral", txt + f"\n\nHay {len(difs)} diferencia(s).\n"
+                                   "Se abre un asiento de ajuste por cada una: apruébelo (OK), cámbielo y apruébelo, "
+                                   "o recháselo (Cancelar).\nEn la segunda línea elija la cuenta de contrapartida.\n\n¿Empezar?"):
             return
-        pre = [dict(amount=dif, code=cta["code"], sub1=None, sub2=None, sub3=None, name=""),
-               dict(amount=-dif, code="", sub1=None, sub2=None, sub3=None, name="")]
-        d = ui_contab.AsientoDialog(self.root, gl, modo="guardar", titulo="Ajuste: cuadrar Cuentas por cobrar con Facturación",
-                                    info=f"Facturación {m2(fact)}   Diario {m2(diario)}   Ajuste a {cta['code']}: {m2(dif)}\n"
-                                         "Escriba o busque (F2) la cuenta de contrapartida en la segunda línea, revise y dé OK.",
-                                    descr="Ajuste cuentas por cobrar para cuadrar con Facturación", fecha=hoy, prellenar=pre)
-        self.root.wait_window(d)
-        if d.result:
-            self.refresh_all()
-            nuevo = round(dict((c["id"], v) for c, v in gl.balanza(hoy.year, hoy.month)).get(cid, 0), 2)
-            messagebox.showinfo("Cuadrar CxC", f"Listo.\nFacturación {m2(fact)}\nDiario General {m2(nuevo)}")
+        hechos = 0
+        for i, (n, c, f, d, s) in enumerate(difs, 1):
+            dif = round((f - d) * s, 2)
+            pre = [dict(amount=dif, code=c["code"], sub1=None, sub2=None, sub3=None, name=""),
+                   dict(amount=-dif, code="", sub1=None, sub2=None, sub3=None, name="")]
+            dlg = ui_contab.AsientoDialog(self.root, gl, modo="guardar",
+                                          titulo=f"Ajuste {i} de {len(difs)}: {n.split(' (')[0]}",
+                                          info=f"{n}\nFacturación {m2(f)}   Diario {m2(d)}   Ajuste a {c['code']} {c['name']}: "
+                                               f"{m2(abs(dif))} {'débito' if dif > 0 else 'crédito'}\n"
+                                               "Escriba o busque (F2) la contrapartida en la segunda línea. OK = aprobar, Cancelar = rechazar.",
+                                          descr=f"Ajuste {n.split(' (')[0].lower()} para cuadrar con Facturación", fecha=hoy, prellenar=pre)
+            self.root.wait_window(dlg)
+            if dlg.result: hechos += 1
+        self.refresh_all()
+        messagebox.showinfo("Cuadrar valores Fact & Drio. Gral", f"Ajustes grabados: {hechos}\n"
+                            f"Rechazados (siguen con diferencia): {len(difs) - hechos}")
 
     def pasar_caja_chica(self):
         """Si 'Segunda caja chica' o la cuenta 'en tránsito' tienen balance mayor que cero, ofrece pasarlo
