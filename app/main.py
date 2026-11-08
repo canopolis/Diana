@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.17"
+VERSION = "1.18"
 NOMBRE = "Diana"
 
 
@@ -1396,13 +1396,13 @@ class App:
                             f"No se volverán a recordar: {norec}\nRechazados (siguen con diferencia): {len(difs) - hechos - norec}")
 
     def hay_pendientes(self):
-        """Para el parpadeo del botón: documentos sin asiento, balances por depositar o diferencias por cuadrar."""
+        """Para el parpadeo del botón: solo documentos de Facturación sin asiento o ventas cobradas directo
+        que siguen pendientes. Las diferencias de cuadre no lo hacen parpadear (se revisan al pulsarlo)."""
         a = (self.gl.arranque() or "")[:10]
         if not a: return False
         try:
             if self.pendientes_contables(a, datetime.date.today().isoformat()): return True
-            if self.facturas_cobradas_directo(): return True
-            return bool(self.cuadrar_valores(solo_revisar=True))
+            return bool(self.facturas_cobradas_directo())
         except Exception:
             return False
 

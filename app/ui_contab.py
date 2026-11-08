@@ -547,7 +547,9 @@ class DiarioTab:
         except Exception:
             bal = []
         self._dep_on = bool(bal)
-        self.btn_dep.config(state="normal" if bal else "disabled")
+        self.btn_dep.config(state="normal" if bal else "disabled",
+                            text="Depositar balance\n" + ("   ".join(f"{c['name']}: {m2(v)}" for c, v in bal)
+                                                           if bal else "2da caja chica / en tránsito"))
         if not bal:
             self.btn_dep.config(bg=self._dep_bg, fg="black")
         if not self._rev_on:
