@@ -466,7 +466,7 @@ class DiarioTab:
         sb.pack(side="right", fill="y"); self.tv.pack(fill="both", expand=True)
         self.tv.bind("<Double-1>", lambda e: self.editar())
         acts = [("Nuevo", self.nuevo), ("Editar", self.editar), ("Eliminar", self.eliminar), ("Copiar", self.copiar),
-                ("Diario en PDF", self.pdf)]
+                ("Diario en PDF", self.pdf), ("Contabilizar asientos pendientes", self.app.contabilizar_pendientes)]
         for t, cmd in acts:
             ttk.Button(b, text=t, command=cmd).pack(side="left", padx=3)
         self.lbl = ttk.Label(b, text=""); self.lbl.pack(side="right", padx=8)

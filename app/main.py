@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.3"
+VERSION = "1.4"
 NOMBRE = "Diana"
 
 
@@ -1099,6 +1099,98 @@ class App:
     def gl_grabar(self, parent, r):
         if r:
             ui_contab.grabar_asiento_documento(parent, self.gl, r)
+
+    # ----- contabilizar asientos pendientes -----
+    def pendientes_contables(self, d1, d2):
+        """Documentos de Facturación entre d1 y d2 (AAAA-MM-DD) que no tienen asiento. Lista ordenada por fecha."""
+        gl, db = self.gl, self.db
+        out = []
+        def ok(ref, fecha):
+            return d1 <= (fecha or "")[:10] <= d2 and not gl.asiento_de(ref)
+        def lns(rows):
+            return [dict(qty=r["qty"] or 0, price=r["price"] or 0, cost=r["cost"] or 0, itbis=r["itbis"] or 0) for r in rows]
+        for h in db.q("SELECT * FROM invoices WHERE deleted=0 AND date BETWEEN ? AND ? ORDER BY date, nro", (d1, d2)):
+            ref = f"F:{h['nro']}"
+            if not ok(ref, h["date"]): continue
+            ls = lns(db.q("SELECT * FROM lines WHERE nro=? ORDER BY pos", (h["nro"],)))
+            dsc = h["discount"] or 0
+            out.append(dict(fecha=h["date"][:10], ref=ref, tipo="Factura", titulo=f"Asiento de la factura {h['nro']}",
+                            info=info_documento(db, "F", h["nro"], dict(h), ls, dsc, h["tipo"], h["ncf"]),
+                            descr=f"Factura {h['nro']} {h['name'] or ''}".strip(), op="venta",
+                            montos=dict(montos_doc(ls, dsc), fiscal=(h["tipo"] or 0) != 0)))
+        for h in db.q("SELECT * FROM odocs WHERE deleted=0 AND kind IN ('NC','ND','G','O') AND date BETWEEN ? AND ? "
+                      "ORDER BY date, nro", (d1, d2)):
+            k = h["kind"]
+            if k == "G" and (h["factura"] or 0): continue
+            if k == "O" and h["status"] != "Recibida": continue
+            ref = f"{k}:{h['nro']}"
+            if not ok(ref, h["date"]): continue
+            ls = lns(db.q("SELECT * FROM olines WHERE kind=? AND nro=? ORDER BY pos", (k, h["nro"])))
+            dsc = h["discount"] or 0
+            fiscal = False
+            if k in ("NC", "ND") and h["factura"]:
+                t = db.one("SELECT tipo FROM invoices WHERE nro=?", (h["factura"],))
+                fiscal = bool(t and (t[0] or 0) != 0)
+            op = {"NC": "nc", "ND": "nd", "G": "conduce", "O": "compra"}[k]
+            out.append(dict(fecha=h["date"][:10], ref=ref, tipo=KIND_NAME[k], titulo=f"Asiento de {KIND_NAME[k].lower()} {h['nro']}",
+                            info=info_documento(db, k, h["nro"], dict(h), ls, dsc),
+                            descr=f"{KIND_NAME[k]} {h['nro']} {h['name'] or ''}".strip(), op=op,
+                            montos=dict(montos_doc(ls, dsc), devolucion=h["status"] == "Con devolución", fiscal=fiscal)))
+        for p in db.q("SELECT p.*, i.name FROM payments p LEFT JOIN invoices i ON i.nro=p.nro "
+                      "WHERE p.date BETWEEN ? AND ? ORDER BY p.date, p.id", (d1, d2)):
+            ref = f"PAGO:{p['id']}"
+            if not ok(ref, p["date"]): continue
+            out.append(dict(fecha=p["date"][:10], ref=ref, tipo="Cobro", titulo=f"Asiento del cobro de la factura {p['nro']}",
+                            info=f"Cobro de la factura {p['nro']}   {p['name'] or ''}\nMonto {m2(p['amount'] or 0)}   Forma: {p['method'] or ''}",
+                            descr=f"Cobro factura {p['nro']} {p['name'] or ''}".strip(), op="cobro", montos=dict(monto=p["amount"] or 0)))
+        for p in db.q("SELECT p.*, o.name FROM ap_payments p LEFT JOIN odocs o ON o.kind='O' AND o.nro=p.nro "
+                      "WHERE p.date BETWEEN ? AND ? ORDER BY p.date, p.id", (d1, d2)):
+            ref = f"APPAGO:{p['id']}"
+            if not ok(ref, p["date"]): continue
+            out.append(dict(fecha=p["date"][:10], ref=ref, tipo="Pago a suplidor", titulo=f"Asiento del pago de la compra {p['nro']}",
+                            info=f"Pago a suplidor, compra {p['nro']}   {p['name'] or ''}\nMonto {m2(p['amount'] or 0)}   Forma: {p['method'] or ''}",
+                            descr=f"Pago compra {p['nro']} {p['name'] or ''}".strip(), op="pago", montos=dict(monto=p["amount"] or 0)))
+        out.sort(key=lambda x: (x["fecha"], x["ref"]))
+        return out
+
+    def contabilizar_pendientes(self):
+        hoy = datetime.date.today()
+        rg = ui_contab.pedir_rango(self, "Contabilizar asientos pendientes", dmy(hoy.replace(day=1)), dmy(hoy))
+        if not rg: return
+        pend = self.pendientes_contables(*rg)
+        if not pend:
+            messagebox.showinfo("Asientos pendientes", "No hay documentos de Facturación sin asiento en esas fechas."); return
+        cuenta = {}
+        for p in pend: cuenta[p["tipo"]] = cuenta.get(p["tipo"], 0) + 1
+        det = "\n".join(f"   {t}: {n}" for t, n in cuenta.items())
+        if not messagebox.askyesno("Asientos pendientes", f"Hay {len(pend)} documento(s) sin asiento:\n{det}\n\n"
+                                   "Se abre el asiento de cada uno ya lleno. Revíselo, cámbielo si hace falta y dé OK.\n"
+                                   "Si cierra la ventana sin OK, ese documento se salta y queda pendiente.\n\n¿Empezar?"):
+            return
+        hechos = saltados = 0
+        orig = self.gl.contabiliza
+        self.gl.contabiliza = lambda fecha: True   # aqui se contabiliza aunque sea antes de la fecha de arranque
+        try:
+            for i, p in enumerate(pend, 1):
+                r = ui_contab.asiento_automatico(self.root, self.gl, p["ref"], p["descr"],
+                                                 datetime.date.fromisoformat(p["fecha"]), p["op"], p["montos"],
+                                                 f"{p['titulo']}   ({i} de {len(pend)})", p["info"])
+                if r:
+                    try:
+                        self.gl_grabar(self.root, r); hechos += 1
+                    except Exception as e:
+                        messagebox.showerror("Asientos pendientes", f"No se pudo grabar el asiento de {p['descr']}:\n{e}")
+                        saltados += 1
+                    continue
+                saltados += 1
+                if r is None and i < len(pend) and not messagebox.askyesno(
+                        "Asientos pendientes", f"Se saltó: {p['descr']}.\n¿Seguir con los demás?"):
+                    break
+        finally:
+            self.gl.contabiliza = orig
+        self.refresh_all()
+        messagebox.showinfo("Asientos pendientes", f"Asientos grabados: {hechos}\nSaltados (siguen pendientes): {saltados}"
+                            + (f"\nNo revisados: {len(pend) - hechos - saltados}" if len(pend) - hechos - saltados else ""))
 
     def gl_anular(self, ref, descr, parent=None):
         return ui_contab.anular_documento(parent or self.root, self.gl, ref, descr)
