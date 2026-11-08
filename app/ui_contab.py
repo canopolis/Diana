@@ -418,6 +418,14 @@ def anular_documento(parent, gl, ref, descr):
     """Al eliminar un documento con asiento se registra el reverso con fecha de hoy."""
     if not gl.asiento_de(ref):
         return True
+    r = messagebox.askyesnocancel("Diario General", f"{descr}\n\nEste documento tiene asiento en el Diario General.\n"
+                                  "¿Registrar también el reverso en el Diario General (con fecha de hoy)?\n\n"
+                                  "Sí = se reversa el asiento\nNo = el Diario General no se toca\nCancelar = no se hace nada",
+                                  parent=parent)
+    if r is None:
+        return False
+    if not r:
+        return True
     try:
         gl.reversar_ref(ref, datetime.date.today(), descr)
     except Bloqueado as e:
@@ -554,11 +562,14 @@ class DiarioTab:
     def eliminar(self):
         j = self.sel()
         if not j: return
-        if self._es_documento(j):
-            messagebox.showinfo("Eliminar", "Este asiento pertenece a un documento de Facturación.\n"
-                                "Si elimina ese documento, el asiento se reversa solo."); return
         h = self.gl.con.execute("SELECT number, descr FROM gl_jv WHERE id=?", (j,)).fetchone()
-        if messagebox.askyesno("Eliminar", f"¿Eliminar el asiento {h['number'] or ''} {h['descr']}?"):
+        txt = f"¿Eliminar el asiento {h['number'] or ''} {h['descr']}?"
+        if self._es_documento(j):
+            txt = (f"El asiento {h['number'] or ''} {h['descr']} viene de un documento de Facturación.\n\n"
+                   "Se borra SOLO el asiento del Diario General. El documento en Facturación no se toca "
+                   "(no se elimina ni cambia nada).\nEse documento volverá a salir en 'Contabilizar asientos pendientes'.\n\n"
+                   "¿Eliminar el asiento?")
+        if messagebox.askyesno("Eliminar", txt, icon="warning"):
             try:
                 self.gl.borrar_asiento(j)
             except Bloqueado as e:
