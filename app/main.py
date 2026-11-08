@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.9"
+VERSION = "1.10"
 NOMBRE = "Diana"
 
 
@@ -1171,6 +1171,39 @@ class App:
                 v = round(sal.get(c["id"], 0), 2)
                 if v > 0: out.append((c, v))
         return out
+
+    def cuadrar_cxc(self):
+        """Compara Cuentas por cobrar de Facturación (lo que manda) con la cuenta CxC del Diario General
+        y prepara el asiento de ajuste por la diferencia. Siempre se revisa y se aprueba con OK."""
+        gl = self.gl; hoy = datetime.date.today()
+        cid = ui_contab.cta_auto(gl, "cxc")
+        if not cid:
+            messagebox.showwarning("Cuadrar CxC", "Falta la cuenta de Cuentas por cobrar en "
+                                   "Configuración > Contabilidad > Cuentas automáticas."); return
+        cta = gl.cuenta(cid)
+        fact = round(sum(s for _, s in self.db.open_invoices(None)), 2)
+        diario = round(dict((c["id"], v) for c, v in gl.balanza(hoy.year, hoy.month)).get(cid, 0), 2)
+        dif = round(fact - diario, 2)
+        txt = (f"Cuentas por cobrar al {dmy(hoy)}\n\n"
+               f"   Facturación (correcto):   {m2(fact)}\n"
+               f"   Diario General ({cta['code']} {cta['name']}):   {m2(diario)}\n"
+               f"   Diferencia:   {m2(dif)}")
+        if abs(dif) < 0.005:
+            messagebox.showinfo("Cuadrar CxC", txt + "\n\nEstán cuadradas. No hace falta ajuste."); return
+        if not messagebox.askyesno("Cuadrar CxC", txt + "\n\n¿Preparar el asiento de ajuste para que el Diario General "
+                                   "quede igual a Facturación?\n(En la ventana elija la cuenta de contrapartida y dé OK.)"):
+            return
+        pre = [dict(amount=dif, code=cta["code"], sub1=None, sub2=None, sub3=None, name=""),
+               dict(amount=-dif, code="", sub1=None, sub2=None, sub3=None, name="")]
+        d = ui_contab.AsientoDialog(self.root, gl, modo="guardar", titulo="Ajuste: cuadrar Cuentas por cobrar con Facturación",
+                                    info=f"Facturación {m2(fact)}   Diario {m2(diario)}   Ajuste a {cta['code']}: {m2(dif)}\n"
+                                         "Escriba o busque (F2) la cuenta de contrapartida en la segunda línea, revise y dé OK.",
+                                    descr="Ajuste cuentas por cobrar para cuadrar con Facturación", fecha=hoy, prellenar=pre)
+        self.root.wait_window(d)
+        if d.result:
+            self.refresh_all()
+            nuevo = round(dict((c["id"], v) for c, v in gl.balanza(hoy.year, hoy.month)).get(cid, 0), 2)
+            messagebox.showinfo("Cuadrar CxC", f"Listo.\nFacturación {m2(fact)}\nDiario General {m2(nuevo)}")
 
     def pasar_caja_chica(self):
         """Si 'Segunda caja chica' o la cuenta 'en tránsito' tienen balance mayor que cero, ofrece pasarlo
