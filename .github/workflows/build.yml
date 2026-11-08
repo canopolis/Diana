@@ -1,0 +1,55 @@
+name: Compilar Diana
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: compilar
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Compilar .exe
+        run: pyinstaller --noconfirm --onefile --windowed --name Diana --icon app/icono.ico --add-data "app/icono.ico;." --paths app app/main.py
+
+      - name: Zip portable con numero de version
+        shell: pwsh
+        run: Compress-Archive -Path dist/Diana.exe -DestinationPath "dist/Diana-portable-${{ github.run_number }}.zip"
+
+      - name: Borrar versiones anteriores (queda una sola descarga)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tags = gh release list --limit 100 --json tagName -q '.[].tagName'
+          foreach ($t in $tags) { if ($t) { gh release delete $t --cleanup-tag -y } }
+          exit 0
+
+      - name: Publicar la version nueva
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ultima
+          name: Diana (ultima version)
+          body: "Descargue Diana.exe (doble clic y abre). Compilado #${{ github.run_number }}."
+          make_latest: true
+          files: |
+            dist/Diana.exe
+            dist/Diana-portable-${{ github.run_number }}.zip
