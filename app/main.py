@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.19"
+VERSION = "1.20"
 NOMBRE = "Diana"
 
 
@@ -1106,30 +1106,50 @@ class App:
                 except ValueError:
                     pass
 
-    def cobradas_directo(self, nros, parent=None):
-        """Facturas cuyo asiento no pasa por Cuentas por cobrar (venta cobrada directo a banco/caja) y que en
-        Facturación siguen con saldo: pregunta si se marcan como pagadas. El cobro se registra en Facturación
-        SIN otro asiento (el dinero ya entró con el asiento de la factura)."""
+    NOTA_DIRECTO = "Cobrada directo en el asiento de la factura"
+
+    def _directo_pendiente(self, n):
+        """Monto cobrado directo (en el asiento de la factura, sin pasar por CxC) que aún no está registrado
+        como cobro en Facturación. Sirve para pago total o parcial: total de la factura menos lo que el
+        asiento cargó a Cuentas por cobrar, menos lo ya registrado así."""
         gl, db = self.gl, self.db
         cxc = ui_contab.cta_auto(gl, "cxc")
-        if not cxc: return 0
+        jid = gl.asiento_de(f"F:{n}")
+        if not cxc or not jid: return 0.0
+        inv = db.one("SELECT total FROM invoices WHERE nro=? AND deleted=0", (n,))
+        if not inv: return 0.0
+        a_cxc = gl.con.execute("SELECT COALESCE(SUM(amount),0) FROM gl_lines WHERE jv_id=? AND account_id=?",
+                               (jid, cxc)).fetchone()[0] or 0
+        ya = db.one("SELECT COALESCE(SUM(amount),0) FROM payments WHERE nro=? AND note=?", (n, self.NOTA_DIRECTO))[0] or 0
+        directo = round((inv["total"] or 0) - a_cxc - ya, 2)
+        return max(0.0, min(directo, db.invoice_saldo(n)))
+
+    def cobradas_directo(self, nros, parent=None):
+        """Facturas cuyo asiento cobró todo o parte directo a banco/caja (sin CxC) y que en Facturación siguen
+        con saldo: pregunta si se registra ese cobro (total o parcial). Se registra en Facturación SIN otro
+        asiento (el dinero ya entró con el asiento de la factura)."""
+        from tkinter import simpledialog
+        gl, db = self.gl, self.db
         gl.con.execute("CREATE TABLE IF NOT EXISTS gl_ya_en_diario(ref TEXT PRIMARY KEY, fecha TEXT)")
         hechos = 0
         for n in nros:
-            jid = gl.asiento_de(f"F:{n}")
-            if not jid: continue
-            if gl.con.execute("SELECT 1 FROM gl_lines WHERE jv_id=? AND account_id=?", (jid, cxc)).fetchone(): continue
+            monto = self._directo_pendiente(n)
+            if monto <= 0.005: continue
+            inv = db.one("SELECT date, name, total FROM invoices WHERE nro=?", (n,))
             saldo = db.invoice_saldo(n)
-            if saldo <= 0.005: continue
-            inv = db.one("SELECT date, name FROM invoices WHERE nro=?", (n,))
+            tipo = "todo" if abs(monto - saldo) < 0.005 else "una parte"
             if not messagebox.askyesno("Venta cobrada directo",
-                                       f"El asiento de la factura {n} {inv['name'] or ''} no pasa por Cuentas por cobrar "
-                                       f"(se cobró directo).\nEn Facturación sigue pendiente de pago: {m2(saldo)}.\n\n"
-                                       "¿Marcarla como pagada en Facturación?\n(No se crea otro asiento: el cobro ya está "
-                                       "en el asiento de la factura.)", parent=parent or self.root):
+                                       f"Factura {n} {inv['name'] or ''}   Total {m2(inv['total'] or 0)}\n"
+                                       f"Su asiento cobró {tipo} directo (sin Cuentas por cobrar): {m2(monto)}.\n"
+                                       f"En Facturación tiene saldo pendiente: {m2(saldo)}.\n\n"
+                                       f"¿Registrar en Facturación el cobro de {m2(monto)}?\n"
+                                       "(No se crea otro asiento: ese dinero ya está en el asiento de la factura.)",
+                                       parent=parent or self.root):
                 continue
-            db.add_payment(n, saldo, "Contado", parse_date(inv["date"]) or datetime.date.today(),
-                           "Cobrada directo en el asiento de la factura")
+            v = simpledialog.askfloat("Venta cobrada directo", f"Monto cobrado de la factura {n}:", initialvalue=monto,
+                                      minvalue=0.01, maxvalue=saldo, parent=parent or self.root)
+            if not v: continue
+            db.add_payment(n, round(v, 2), "Contado", parse_date(inv["date"]) or datetime.date.today(), self.NOTA_DIRECTO)
             pid = db.one("SELECT MAX(id) FROM payments")[0]
             gl.con.execute("INSERT OR REPLACE INTO gl_ya_en_diario(ref, fecha) VALUES(?,?)",
                            (f"PAGO:{pid}", datetime.date.today().isoformat())); gl.con.commit()
@@ -1138,18 +1158,14 @@ class App:
         return hechos
 
     def facturas_cobradas_directo(self):
-        """Facturas con asiento sin Cuentas por cobrar y con saldo en Facturación (para revisarlas)."""
-        cxc = ui_contab.cta_auto(self.gl, "cxc")
-        if not cxc: return []
+        """Facturas con cobro directo en su asiento que todavía no está registrado en Facturación."""
         out = []
-        for r in self.gl.con.execute("SELECT id, ref FROM gl_jv WHERE ref LIKE 'F:%'").fetchall():
+        for r in self.gl.con.execute("SELECT ref FROM gl_jv WHERE ref LIKE 'F:%'").fetchall():
             try:
                 n = int(r["ref"][2:])
             except ValueError:
                 continue
-            if self.gl.con.execute("SELECT 1 FROM gl_lines WHERE jv_id=? AND account_id=?", (r["id"], cxc)).fetchone():
-                continue
-            if self.db.invoice_saldo(n) > 0.005:
+            if self._directo_pendiente(n) > 0.005:
                 out.append(n)
         return out
 
