@@ -317,7 +317,7 @@ class AsientoDialog(tk.Toplevel):
             if not cta:
                 raise ValueError(f"Línea {i}: la cuenta '{code}' no existe." if code else f"Línea {i}: falta la cuenta.")
             if cta["suspended"]:
-                raise ValueError(f"Línea {i}: la cuenta {code} está suspendida.")
+                raise ValueError(f"Línea {i}: la cuenta {code} está bloqueada. Reactívela en el Catálogo de cuentas para usarla.")
             if not d and not c:
                 raise ValueError(f"Línea {i}: falta el monto.")
             lineas.append(dict(account_id=cta["id"], amount=round(d - c, 2), name=v["name"].get().strip(),
@@ -588,6 +588,52 @@ class DiarioTab:
         H["open_file"](ruta)
 
 
+class CuentaDialog(tk.Toplevel):
+    def __init__(self, parent, gl, cid=None):
+        super().__init__(parent)
+        self.gl = gl; self.cid = cid; self.result = None
+        c = gl.cuenta(cid) if cid else None
+        self.title("Editar cuenta" if c else "Nueva cuenta"); self.transient(parent); self.grab_set(); self.resizable(False, False)
+        nb = ttk.Notebook(self); nb.pack(fill="both", expand=True, padx=8, pady=8)
+        g = ttk.Frame(nb, padding=16); nb.add(g, text="General")
+        nt = ttk.Frame(nb, padding=8); nb.add(nt, text="Notas")
+        self.vcode = tk.StringVar(value=c["code"] if c else ""); self.vname = tk.StringVar(value=c["name"] if c else "")
+        self.vsus = tk.IntVar(value=c["suspended"] if c else 0); self.vtipo = tk.IntVar(value=c["type"] if c else 0)
+        self.vret = tk.IntVar(value=c["retained"] if c else 0)
+        ttk.Label(g, text="No. de cuenta:").grid(row=0, column=0, sticky="e", padx=4, pady=4)
+        e = ttk.Entry(g, textvariable=self.vcode, width=14); e.grid(row=0, column=1, sticky="w"); e.focus_set()
+        ttk.Checkbutton(g, text="Bloqueada (no acepta movimientos)", variable=self.vsus).grid(row=0, column=2, sticky="w", padx=12)
+        ttk.Label(g, text="Nombre:").grid(row=1, column=0, sticky="e", padx=4, pady=4)
+        ttk.Entry(g, textvariable=self.vname, width=46).grid(row=1, column=1, columnspan=2, sticky="w")
+        tf = ttk.LabelFrame(g, text="Tipo", padding=8); tf.grid(row=2, column=1, columnspan=2, sticky="w", pady=8)
+        for i, (k, t) in enumerate(TIPOS_CTA.items()):
+            ttk.Radiobutton(tf, text=t, value=k, variable=self.vtipo, command=self._tipo).grid(row=i, column=0, sticky="w")
+        self.cret = ttk.Checkbutton(tf, text="Ganancias retenidas", variable=self.vret)
+        self.cret.grid(row=4, column=1, sticky="w", padx=10)
+        self.txt = tk.Text(nt, width=60, height=10); self.txt.pack(fill="both", expand=True)
+        if c and c["notes"]: self.txt.insert("1.0", c["notes"])
+        bf = ttk.Frame(self, padding=8); bf.pack(fill="x")
+        ttk.Button(bf, text="Cancelar", command=self.destroy).pack(side="right", padx=3)
+        ttk.Button(bf, text="OK", command=self.ok).pack(side="right", padx=3)
+        self.bind("<Return>", lambda e: self.ok() if not isinstance(e.widget, tk.Text) else None)
+        self.bind("<Escape>", lambda e: self.destroy())
+        self._tipo()
+
+    def _tipo(self):
+        if self.vtipo.get() == 5:
+            self.cret.state(["!disabled"])
+        else:
+            self.vret.set(0); self.cret.state(["disabled"])
+
+    def ok(self):
+        try:
+            self.result = self.gl.guardar_cuenta(self.cid, self.vcode.get(), self.vname.get(), self.vtipo.get(),
+                                                 self.vret.get(), self.vsus.get(), self.txt.get("1.0", "end-1c"))
+        except ValueError as e:
+            messagebox.showwarning("Cuenta", str(e), parent=self); return
+        self.destroy()
+
+
 class CuentasTab:
     def __init__(self, app, nb=None):
         self.app = app; self.gl = app.gl
@@ -610,10 +656,12 @@ class CuentasTab:
         sb.pack(side="right", fill="y"); self.tv.pack(fill="both", expand=True)
         self.tv.bind("<Double-1>", lambda e: self.editar())
         for t, cmd in (("Nuevo", self.nuevo), ("Editar", self.editar), ("Eliminar", self.eliminar),
+                       ("Bloquear / Reactivar", self.bloquear_reactivar),
                        ("Mayor de la cuenta (PDF)", self.mayor), ("Historial", self.historial)):
             ttk.Button(b, text=t, command=cmd).pack(side="left", padx=3)
         menu_tabla(self.tv, app.root, [("Nuevo", self.nuevo), ("Editar", self.editar), ("Ver mayor (PDF)", self.mayor),
-                                       ("Historial", self.historial), ("Eliminar", self.eliminar)], sin_fila=("Nuevo",))
+                                       ("Historial", self.historial), ("Bloquear / Reactivar", self.bloquear_reactivar),
+                                       ("Eliminar", self.eliminar)], sin_fila=("Nuevo",))
         self.load()
 
     def load(self):
@@ -625,7 +673,7 @@ class CuentasTab:
             tipo = TIPOS_CTA.get(c["type"], "")
             if t != "Todas" and tipo != t: continue
             if s and s not in f"{c['code']} {c['name']}".lower(): continue
-            est = "Suspendida" if c["suspended"] else ("Gan. retenidas" if c["retained"] else "")
+            est = "Bloqueada" if c["suspended"] else ("Gan. retenidas" if c["retained"] else "")
             self.tv.insert("", "end", iid=str(c["id"]), values=(c["code"], c["name"], tipo, m2(sal.get(c["id"], 0)), est))
 
     def sel(self):
@@ -648,6 +696,17 @@ class CuentasTab:
         c = self.sel()
         if c is None: return
         a = self.gl.cuenta(c)
+        if self.gl.cuenta_tiene_movimientos(c):
+            if a["suspended"]:
+                messagebox.showinfo("Eliminar", f"La cuenta {a['code']} {a['name']} tiene movimientos registrados "
+                                    "y no se puede eliminar.\nYa está bloqueada."); return
+            if messagebox.askyesno("Eliminar", f"La cuenta {a['code']} {a['name']} tiene movimientos registrados "
+                                   "y no se puede eliminar.\n\n¿Desea bloquearla?\n\nQueda en el catálogo con sus "
+                                   "movimientos y saldos, pero no acepta movimientos nuevos hasta que se reactive.",
+                                   icon="warning"):
+                self.gl.set_suspendida(c, True); self.load()
+                messagebox.showinfo("Bloquear", f"Cuenta {a['code']} bloqueada.")
+            return
         if not messagebox.askyesno("Eliminar", f"¿Eliminar la cuenta {a['code']} {a['name']}?"):
             return
         try:
@@ -655,6 +714,19 @@ class CuentasTab:
         except ValueError as e:
             messagebox.showwarning("Eliminar", str(e)); return
         self.load()
+
+    def bloquear_reactivar(self):
+        c = self.sel()
+        if c is None: return
+        a = self.gl.cuenta(c)
+        if a["suspended"]:
+            if messagebox.askyesno("Reactivar", f"La cuenta {a['code']} {a['name']} está bloqueada.\n\n"
+                                   "¿Reactivarla para que acepte movimientos otra vez?"):
+                self.gl.set_suspendida(c, False); self.load()
+        else:
+            if messagebox.askyesno("Bloquear", f"¿Bloquear la cuenta {a['code']} {a['name']}?\n\nQueda en el catálogo "
+                                   "con sus movimientos y saldos, pero no acepta movimientos nuevos hasta que se reactive."):
+                self.gl.set_suspendida(c, True); self.load()
 
     def _rango(self, titulo):
         hoy = datetime.date.today()

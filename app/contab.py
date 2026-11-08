@@ -121,8 +121,11 @@ class Contab:
 
     def borrar_cuenta(self, cid):
         if self.cuenta_tiene_movimientos(cid):
-            raise ValueError("La cuenta tiene movimientos. No se puede eliminar; puede marcarla como suspendida.")
+            raise ValueError("La cuenta tiene movimientos registrados. No se puede eliminar; puede bloquearla.")
         self.con.execute("DELETE FROM gl_accounts WHERE id=?", (cid,)); self.con.commit()
+
+    def set_suspendida(self, cid, si):
+        self.con.execute("UPDATE gl_accounts SET suspended=? WHERE id=?", (1 if si else 0, cid)); self.con.commit()
 
     def cuenta_retenidas(self):
         return self.con.execute("SELECT * FROM gl_accounts WHERE retained=1").fetchone()
@@ -154,6 +157,9 @@ class Contab:
             c = self.cuenta(l["account_id"])
             if not c:
                 raise ValueError("Hay una línea con una cuenta que no existe.")
+            if c["suspended"]:
+                raise ValueError(f"La cuenta {c['code']} {c['name']} está bloqueada y no acepta movimientos.\n"
+                                 "Reactívela en el Catálogo de cuentas para usarla.")
         deb = round(sum(l["amount"] for l in lineas if l["amount"] > 0), 2)
         cre = round(-sum(l["amount"] for l in lineas if l["amount"] < 0), 2)
         if abs(deb - cre) > 0.004:
