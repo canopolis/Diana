@@ -56,7 +56,7 @@ class AsientoDialog(tk.Toplevel):
     Facturación guarde el documento y el asiento juntos."""
 
     def __init__(self, parent, gl, jv_id=None, modo="guardar", titulo="Asiento de diario",
-                 info="", descr="", fecha=None, ref=None, source="GL JV", copiar_de=None, nuevo_cb=None, prellenar=None, ya_en_diario=False):
+                 info="", descr="", fecha=None, ref=None, source="GL JV", copiar_de=None, nuevo_cb=None, prellenar=None, ya_en_diario=False, no_recordar=False):
         super().__init__(parent)
         self.gl = gl; self.jv_id = jv_id; self.modo = modo; self.ref = ref; self.source = source
         self.result = None; self.nuevo_cb = nuevo_cb
@@ -124,6 +124,9 @@ class AsientoDialog(tk.Toplevel):
         if modo == "guardar" and nuevo_cb:
             ttk.Button(pie, text="OK y Nuevo", command=lambda: self.ok(nuevo=True)).pack(side="right", padx=3)
         ttk.Button(pie, text="OK", command=self.ok).pack(side="right", padx=3)
+        if no_recordar:
+            ttk.Button(pie, text="No volver a recordar este ajuste",
+                       command=lambda: (setattr(self, "result", "NOREC"), self.destroy())).pack(side="right", padx=12)
         if ya_en_diario:
             ttk.Button(pie, text="Ya está en el diario (no crear asiento)",
                        command=lambda: (setattr(self, "result", "YA"), self.destroy())).pack(side="right", padx=12)

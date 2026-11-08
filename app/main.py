@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.12"
+VERSION = "1.13"
 NOMBRE = "Diana"
 
 
@@ -1251,14 +1251,20 @@ class App:
                          for n, c, f, d, s in filas)
         txt += ("\n\nInventario de Facturación = existencia por último costo de compra (igual que el reporte "
                 "'Valor del inventario').")
-        difs = [x for x in filas if abs(round(x[2] - x[3], 2)) >= 0.005]
+        # ajustes que el usuario pidió no volver a recordar (concepto + diferencia exacta; si la diferencia cambia, vuelve a salir)
+        ign = set(x for x in (db.cfg("gl_cuadre_ignorar") or "").split("\n") if x)
+        clave = lambda x: f"{x[0].split(' (')[0]}|{round(x[2] - x[3], 2):.2f}"
+        difs = [x for x in filas if abs(round(x[2] - x[3], 2)) >= 0.005 and clave(x) not in ign]
+        omit = [x for x in filas if abs(round(x[2] - x[3], 2)) >= 0.005 and clave(x) in ign]
+        if omit:
+            txt += "\n\nNo se recuerdan (pidió no volver a recordarlos): " + ", ".join(x[0].split(" (")[0] for x in omit)
         if not difs:
-            messagebox.showinfo("Cuadrar valores Fact & Drio. Gral", txt + "\n\nTodo cuadra. No hace falta ajuste."); return
+            messagebox.showinfo("Cuadrar valores Fact & Drio. Gral", txt + ("\n\nNo hay ajustes por revisar." if omit else "\n\nTodo cuadra. No hace falta ajuste.")); return
         if not messagebox.askyesno("Cuadrar valores Fact & Drio. Gral", txt + f"\n\nHay {len(difs)} diferencia(s).\n"
                                    "Se abre un asiento de ajuste por cada una: apruébelo (OK), cámbielo y apruébelo, "
                                    "o recháselo (Cancelar).\nEn la segunda línea elija la cuenta de contrapartida.\n\n¿Empezar?"):
             return
-        hechos = 0
+        hechos = norec = 0
         for i, (n, c, f, d, s) in enumerate(difs, 1):
             dif = round((f - d) * s, 2)
             if n.startswith("Inventario") and not messagebox.askyesno(
@@ -1274,12 +1280,15 @@ class App:
                                           info=f"{n}\nFacturación {m2(f)}   Diario {m2(d)}   Ajuste a {c['code']} {c['name']}: "
                                                f"{m2(abs(dif))} {'débito' if dif > 0 else 'crédito'}\n"
                                                "Escriba o busque (F2) la contrapartida en la segunda línea. OK = aprobar, Cancelar = rechazar.",
-                                          descr=f"Ajuste {n.split(' (')[0].lower()} para cuadrar con Facturación", fecha=hoy, prellenar=pre)
+                                          descr=f"Ajuste {n.split(' (')[0].lower()} para cuadrar con Facturación", fecha=hoy, prellenar=pre,
+                                          no_recordar=True)
             self.root.wait_window(dlg)
-            if dlg.result: hechos += 1
+            if dlg.result == "NOREC":
+                ign.add(clave((n, c, f, d, s))); db.set_cfg("gl_cuadre_ignorar", "\n".join(sorted(ign))); norec += 1
+            elif dlg.result: hechos += 1
         self.refresh_all()
         messagebox.showinfo("Cuadrar valores Fact & Drio. Gral", f"Ajustes grabados: {hechos}\n"
-                            f"Rechazados (siguen con diferencia): {len(difs) - hechos}")
+                            f"No se volverán a recordar: {norec}\nRechazados (siguen con diferencia): {len(difs) - hechos - norec}")
 
     def pasar_caja_chica(self):
         """Si 'Segunda caja chica' o la cuenta 'en tránsito' tienen balance mayor que cero, ofrece pasarlo
