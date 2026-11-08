@@ -473,14 +473,17 @@ class DiarioTab:
             self.tv.column(c, width=w, minwidth=w if c != "Descripción" else 200, anchor="center",
                            stretch=(c == "Descripción"))
         sb = ttk.Scrollbar(fr, orient="vertical", command=self.tv.yview); self.tv.configure(yscrollcommand=sb.set)
+        self.sb = sb
         b = ttk.Frame(fr); b.pack(side="bottom", fill="x", pady=4)
         sb.pack(side="right", fill="y"); self.tv.pack(fill="both", expand=True)
         self.tv.bind("<Double-1>", lambda e: self.editar())
         acts = [("Nuevo", self.nuevo), ("Editar", self.editar), ("Eliminar", self.eliminar), ("Copiar", self.copiar),
-                ("Diario en PDF", self.pdf), ("Contabilizar asientos pendientes", self.app.contabilizar_pendientes)]
+                ("Diario en PDF", self.pdf), ("Contabilizar asientos pendientes", self.app.contabilizar_pendientes),
+                ("Pasar balance en tránsito / 2da caja chica", self.pasar_balances)]
         for t, cmd in acts:
             ttk.Button(b, text=t, command=cmd).pack(side="left", padx=3)
         self.lbl = ttk.Label(b, text=""); self.lbl.pack(side="right", padx=8)
+        self.lbl_bal = tk.Label(fr, text="", bg="#fde2e1", fg="#9b1c1c", anchor="w", font=("Segoe UI", 10, "bold"), padx=8)
         menu_tabla(self.tv, app.root, [("Nuevo", self.nuevo), ("Editar", self.editar), ("Ver asiento", self.editar),
                                        ("Copiar", self.copiar), ("Eliminar", self.eliminar), ("-", None),
                                        ("Buscar", lambda: e.focus_set()), ("Filtrar por fechas", lambda: self.load()),
@@ -520,6 +523,26 @@ class DiarioTab:
                                                                 r["source"], H["dmy"](r["date"]), r["descr"], m2(r["amount"] or 0)))
             n += 1; tot += r["amount"] or 0
         self.lbl.config(text=f"{n} asientos   Total {m2(tot)}")
+        self.aviso_balances()
+
+    def aviso_balances(self):
+        """Recordatorio arriba del diario cuando hay balance en tránsito o en 2da caja chica."""
+        try:
+            bal = self.app.balances_por_pasar()
+        except Exception:
+            bal = []
+        if bal:
+            self.lbl_bal.config(text="   Balance por pasar:  " + "   |   ".join(f"{c['name']}: {m2(v)}" for c, v in bal)
+                                + "      (botón 'Pasar balance en tránsito / 2da caja chica')")
+            if not self.lbl_bal.winfo_ismapped():
+                self.lbl_bal.pack(fill="x", side="top", before=self.sb)
+        else:
+            self.lbl_bal.pack_forget()
+
+    def pasar_balances(self):
+        if not self.app.balances_por_pasar():
+            messagebox.showinfo("Balances", "No hay balance en tránsito ni en 2da caja chica."); return
+        self.app.pasar_caja_chica(); self.load()
 
     def sel(self):
         s = self.tv.selection()

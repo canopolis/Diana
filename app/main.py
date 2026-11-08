@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.7"
+VERSION = "1.8"
 NOMBRE = "Diana"
 
 
@@ -746,7 +746,7 @@ class InvoiceEditor(tk.Toplevel):
                 h["factura"] = self.ref_invoice
                 h["status"] = ("Con devolución" if self.devol.get() else "Sin devolución") if self.kind == "NC" else ""
             asiento = False
-            if self.kind in ("NC", "ND", "G") or (self.kind == "O" and self.app.db.one(
+            if self.kind in ("NC", "ND") or (self.kind == "O" and self.app.db.one(
                     "SELECT 1 FROM odocs WHERE kind='O' AND nro=? AND status='Recibida'", (h["nro"],))):
                 asiento = self.app.gl_doc(self, f"{self.kind}:{h['nro']}", f"Asiento de {KIND_NAME[self.kind].lower()} {h['nro']}",
                                           info_documento(self.db, self.kind, h["nro"], h, self.lines, dsc),
@@ -1122,7 +1122,7 @@ class App:
                             info=f"FACTURA con fecha {fd(h['date'])}\n" + info_documento(db, "F", h["nro"], dict(h), ls, dsc, h["tipo"], h["ncf"]),
                             descr=f"Factura {h['nro']} {h['name'] or ''}".strip(), op="venta",
                             montos=dict(montos_doc(ls, dsc), fiscal=(h["tipo"] or 0) != 0)))
-        for h in db.q("SELECT * FROM odocs WHERE deleted=0 AND kind IN ('NC','ND','G','O') AND date BETWEEN ? AND ? "
+        for h in db.q("SELECT * FROM odocs WHERE deleted=0 AND kind IN ('NC','ND','O') AND date BETWEEN ? AND ? "
                       "ORDER BY date, nro", (d1, d2)):
             k = h["kind"]
             if k == "G" and (h["factura"] or 0): continue
@@ -1157,7 +1157,65 @@ class App:
         out.sort(key=lambda x: (x["fecha"], x["ref"]))
         return out
 
+    def balances_por_pasar(self):
+        """[(cuenta, saldo)] de Segunda caja chica y cuentas en tránsito con balance mayor que cero."""
+        import unicodedata
+        def norm(s):
+            return "".join(ch for ch in unicodedata.normalize("NFD", (s or "").lower()) if unicodedata.category(ch) != "Mn")
+        hoy = datetime.date.today()
+        sal = None; out = []
+        for c in self.gl.cuentas():
+            if any(k in norm(c["name"]) for k in ("segunda caja chica", "en transito")):
+                if sal is None:
+                    sal = dict((x["id"], v) for x, v in self.gl.balanza(hoy.year, hoy.month))
+                v = round(sal.get(c["id"], 0), 2)
+                if v > 0: out.append((c, v))
+        return out
+
+    def pasar_caja_chica(self):
+        """Si 'Segunda caja chica' o la cuenta 'en tránsito' tienen balance mayor que cero, ofrece pasarlo
+        a una cuenta activa (Canopolis o Miguel Canahuate BHD). Siempre pregunta y se revisa el asiento antes de OK."""
+        import unicodedata
+        def norm(s):
+            return "".join(ch for ch in unicodedata.normalize("NFD", (s or "").lower()) if unicodedata.category(ch) != "Mn")
+        gl = self.gl
+        for clave in ("segunda caja chica", "en transito"):
+            hoy = datetime.date.today()
+            ctas = gl.cuentas()
+            for caja in [c for c in ctas if clave in norm(c["name"])]:
+                saldo = round(dict((c["id"], v) for c, v in gl.balanza(hoy.year, hoy.month)).get(caja["id"], 0), 2)
+                if saldo <= 0: continue
+                nom = f"{caja['code']} {caja['name']}"
+                destinos = [c for c in ctas if not c["suspended"] and c["id"] != caja["id"] and
+                            any(x in norm(c["name"]) for x in ("canopolis", "miguel canahuate"))]
+                if not destinos:
+                    messagebox.showwarning(nom, f"{nom} tiene balance {m2(saldo)}, pero no encontré activas "
+                                           "las cuentas Canopolis ni Miguel Canahuate BHD en el catálogo."); continue
+                top = tk.Toplevel(self.root); top.title(f"Balance de {caja['name']}"); top.transient(self.root); top.grab_set()
+                top.resizable(False, False)
+                ttk.Label(top, text=f"{nom} tiene un balance de {m2(saldo)}.\n\n"
+                                    "¿Desea pasar ese balance a otra cuenta?", justify="left", padding=14).pack(anchor="w")
+                elegido = {"c": None}
+                for c in destinos:
+                    ttk.Button(top, text=f"Pasar a {c['code']} {c['name']}", width=50,
+                               command=lambda c=c: (elegido.update(c=c), top.destroy())).pack(padx=14, pady=3)
+                ttk.Button(top, text="No pasar el balance", width=50, command=top.destroy).pack(padx=14, pady=(8, 14))
+                self.root.wait_window(top)
+                c = elegido["c"]
+                if not c: continue
+                pre = [dict(amount=saldo, code=c["code"], sub1=None, sub2=None, sub3=None, name=""),
+                       dict(amount=-saldo, code=caja["code"], sub1=None, sub2=None, sub3=None, name="")]
+                d = ui_contab.AsientoDialog(self.root, gl, modo="guardar", titulo=f"Pasar balance de {caja['name']}",
+                                            info=f"Débito {c['code']} {c['name']}   Crédito {nom}   Monto {m2(saldo)}\n"
+                                                 "Revise el asiento y dé OK para grabarlo.",
+                                            descr=f"Traspaso balance {caja['name'].lower()} a {c['name']}", fecha=hoy, prellenar=pre)
+                self.root.wait_window(d)
+                if d.result:
+                    self.refresh_all()
+                    messagebox.showinfo(nom, f"Se pasó {m2(saldo)} a {c['code']} {c['name']}.")
+
     def contabilizar_pendientes(self):
+        self.pasar_caja_chica()
         hoy = datetime.date.today()
         rg = ui_contab.pedir_rango(self, "Contabilizar asientos pendientes", dmy(hoy.replace(day=1)), dmy(hoy))
         if not rg: return
