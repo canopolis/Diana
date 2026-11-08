@@ -480,15 +480,14 @@ class DiarioTab:
         b = ttk.Frame(fr); b.pack(side="bottom", fill="x", pady=4)
         sb.pack(side="right", fill="y"); self.tv.pack(fill="both", expand=True)
         self.tv.bind("<Double-1>", lambda e: self.editar())
-        acts = [("Nuevo", self.nuevo), ("Editar", self.editar), ("Eliminar", self.eliminar), ("Copiar", self.copiar),
-                ("Diario en PDF", self.pdf), ("Contabilizar asientos pendientes", self.app.contabilizar_pendientes),
-                ("Cuadrar valores Fact & Drio. Gral", self.app.cuadrar_valores)]
+        acts = [("Nuevo", self.nuevo), ("Editar", self.editar), ("Eliminar", self.eliminar), ("Copiar", self.copiar)]
         for t, cmd in acts:
             ttk.Button(b, text=t, command=cmd).pack(side="left", padx=3)
         self.lbl = ttk.Label(b, text=""); self.lbl.pack(side="right", padx=8)
         # se activa y parpadea solo cuando hay balance en 2da caja chica o en tránsito
-        self.btn_dep = tk.Button(b, text="Depositar balance\n2da caja chica / en tránsito", command=self.pasar_balances,
-                                 state="disabled", relief="raised", padx=8)
+        # un solo botón para todo; parpadea cuando hay balance por depositar en 2da caja chica / en tránsito
+        self.btn_dep = tk.Button(b, text="Revisar Facturación y Diario", command=self.revisar_todo,
+                                 relief="raised", padx=10, pady=4)
         self.btn_dep.pack(side="left", padx=3)
         self._dep_bg = self.btn_dep.cget("bg"); self._dep_on = False; self._dep_tick = False
         self._parpadeo()
@@ -534,13 +533,12 @@ class DiarioTab:
         self.aviso_balances()
 
     def aviso_balances(self):
-        """Activa el botón Depositar si hay balance positivo en 2da caja chica o en tránsito."""
+        """El botón 'Revisar Facturación y Diario' parpadea si hay algo pendiente de aplicar."""
         try:
-            bal = self.app.balances_por_pasar()
+            bal = self.app.hay_pendientes()
         except Exception:
-            bal = []
+            bal = False
         self._dep_on = bool(bal)
-        self.btn_dep.config(state="normal" if bal else "disabled")
         if not bal:
             self.btn_dep.config(bg=self._dep_bg, fg="black")
 
@@ -553,6 +551,9 @@ class DiarioTab:
             self.btn_dep.after(600, self._parpadeo)
         except tk.TclError:
             pass
+
+    def revisar_todo(self):
+        self.app.revisar_todo(); self.load()
 
     def pasar_balances(self):
         if not self.app.balances_por_pasar():
@@ -605,7 +606,7 @@ class DiarioTab:
         if self._es_documento(j):
             txt = (f"El asiento {h['number'] or ''} {h['descr']} viene de un documento de Facturación.\n\n"
                    "Se borra SOLO el asiento del Diario General. El documento en Facturación no se toca "
-                   "(no se elimina ni cambia nada).\nEse documento volverá a salir en 'Contabilizar asientos pendientes'.\n\n"
+                   "(no se elimina ni cambia nada).\nEse documento volverá a salir en 'Revisar Facturación y Diario'.\n\n"
                    "¿Eliminar el asiento?")
         if messagebox.askyesno("Eliminar", txt, icon="warning"):
             try:

@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.13"
+VERSION = "1.14"
 NOMBRE = "Diana"
 
 
@@ -1167,27 +1167,68 @@ class App:
         return out
 
     def balances_por_pasar(self):
-        """[(cuenta, saldo)] de Segunda caja chica y cuentas en tránsito con balance mayor que cero."""
+        """[(cuenta, monto)] de Segunda caja chica y cuentas en tránsito: lo que entró desde la fecha de arranque
+        (movimiento neto desde esa fecha) si es mayor que cero. Lo anterior a la fecha de arranque no se toca."""
         import unicodedata
         def norm(s):
             return "".join(ch for ch in unicodedata.normalize("NFD", (s or "").lower()) if unicodedata.category(ch) != "Mn")
-        hoy = datetime.date.today()
-        sal = None; out = []
+        d1 = (self.gl.arranque() or "")[:10]
+        if not d1: return []
+        out = []
         for c in self.gl.cuentas():
-            if any(k in norm(c["name"]) for k in ("segunda caja chica", "en transito")):
-                if sal is None:
-                    sal = dict((x["id"], v) for x, v in self.gl.balanza(hoy.year, hoy.month))
-                v = round(sal.get(c["id"], 0), 2)
+            if any(k in norm(c["name"]) for k in ("segunda caja chica", "2da caja chica", "en transito")):
+                v = self.gl.con.execute("SELECT COALESCE(SUM(l.amount),0) FROM gl_lines l JOIN gl_jv j ON j.id=l.jv_id "
+                                        "WHERE l.account_id=? AND j.date>=?", (c["id"], d1)).fetchone()[0]
+                v = round(v or 0, 2)
                 if v > 0: out.append((c, v))
         return out
 
-    def cuadrar_valores(self):
+    def pasar_caja_chica(self):
+        """Ofrece pasar lo que hay en 2da caja chica / en tránsito (desde la fecha de arranque) a Canopolis o
+        Miguel Canahuate BHD. Cada asiento se aprueba (OK) o se rechaza (queda pendiente)."""
+        import unicodedata
+        def norm(s):
+            return "".join(ch for ch in unicodedata.normalize("NFD", (s or "").lower()) if unicodedata.category(ch) != "Mn")
+        gl = self.gl; hoy = datetime.date.today()
+        for caja, saldo in self.balances_por_pasar():
+            ctas = gl.cuentas()
+            nom = f"{caja['code']} {caja['name']}"
+            destinos = [c for c in ctas if not c["suspended"] and c["id"] != caja["id"] and
+                        any(x in norm(c["name"]) for x in ("canopolis", "miguel canahuate"))]
+            if not destinos:
+                messagebox.showwarning(nom, f"{nom} tiene {m2(saldo)} por depositar, pero no encontré activas "
+                                       "las cuentas Canopolis ni Miguel Canahuate BHD en el catálogo."); continue
+            top = tk.Toplevel(self.root); top.title(f"Balance de {caja['name']}"); top.transient(self.root); top.grab_set()
+            top.resizable(False, False)
+            ttk.Label(top, text=f"{nom} tiene {m2(saldo)} por depositar (desde {dmy(parse_date(gl.arranque()[:10]))}).\n\n"
+                                "¿Desea pasar ese balance a otra cuenta?", justify="left", padding=14).pack(anchor="w")
+            elegido = {"c": None}
+            for c in destinos:
+                ttk.Button(top, text=f"Pasar a {c['code']} {c['name']}", width=50,
+                           command=lambda c=c: (elegido.update(c=c), top.destroy())).pack(padx=14, pady=3)
+            ttk.Button(top, text="No pasar el balance", width=50, command=top.destroy).pack(padx=14, pady=(8, 14))
+            self.root.wait_window(top)
+            c = elegido["c"]
+            if not c: continue
+            pre = [dict(amount=saldo, code=c["code"], sub1=None, sub2=None, sub3=None, name=""),
+                   dict(amount=-saldo, code=caja["code"], sub1=None, sub2=None, sub3=None, name="")]
+            d = ui_contab.AsientoDialog(self.root, gl, modo="guardar", titulo=f"Pasar balance de {caja['name']}",
+                                        info=f"Débito {c['code']} {c['name']}   Crédito {nom}   Monto {m2(saldo)}\n"
+                                             "Revise el asiento y dé OK para grabarlo.",
+                                        descr=f"Traspaso balance {caja['name'].lower()} a {c['name']}", fecha=hoy, prellenar=pre)
+            self.root.wait_window(d)
+            if d.result:
+                self.refresh_all()
+                messagebox.showinfo(nom, f"Se pasó {m2(saldo)} a {c['code']} {c['name']}.")
+
+    def cuadrar_valores(self, solo_revisar=False):
         """Cuadrar valores Fact & Drio. Gral: compara Ventas, Inventario, CxC y CxP de Facturación (lo que manda)
         con el Diario General y sugiere un asiento de ajuste por cada diferencia. Cada asiento se aprueba (OK),
         se cambia y se aprueba, o se rechaza (Cancelar = no se graba y la diferencia sigue)."""
         gl, db = self.gl, self.db
         hoy = datetime.date.today()
         if not gl.arranque():
+            if solo_revisar: return 0
             messagebox.showwarning("Cuadrar valores", "Falta la fecha de arranque en Configuración > Contabilidad."); return
         d1 = gl.arranque()[:10]; d2 = hoy.isoformat()
         def cta(k):
@@ -1197,6 +1238,7 @@ class App:
                                  ("inventario", "Inventario"), ("ventas_fiscal", "Ventas con comprobante"),
                                  ("ventas_libres", "Ventas libres")) if not cta(k)]
         if faltan:
+            if solo_revisar: return 0
             messagebox.showwarning("Cuadrar valores", "Faltan estas cuentas en Configuración > Contabilidad > "
                                    "Cuentas automáticas:\n   " + "\n   ".join(faltan)); return
         sal = dict((c["id"], v) for c, v in gl.balanza(hoy.year, hoy.month))
@@ -1224,6 +1266,8 @@ class App:
         per = f"del {dmy(parse_date(d1))} al {dmy(hoy)}"
         # cuentas de ventas que se usan en el diario (se pregunta una vez; se cambia en Configuración > Contabilidad)
         lista = db.cfg("gl_cuentas_ventas") or ""
+        if not lista and solo_revisar:
+            lista = ",".join(dict.fromkeys([cf["code"], cl["code"]]))
         if not lista:
             from tkinter import simpledialog
             lista = simpledialog.askstring("Cuentas de ventas", "¿Qué cuentas de ventas usa en el Diario General?\n"
@@ -1235,6 +1279,7 @@ class App:
         cods = [x.strip() for x in lista.split(",") if x.strip()]
         ctas_v = [gl.cuenta_por_codigo(x) for x in cods]
         if any(c is None for c in ctas_v):
+            if solo_revisar: return 0
             messagebox.showwarning("Cuadrar valores", f"Alguna cuenta de ventas no existe: {lista}\n"
                                    "Corríjala en Configuración > Contabilidad."); return
         ids_v = {c["id"] for c in ctas_v}
@@ -1256,6 +1301,8 @@ class App:
         clave = lambda x: f"{x[0].split(' (')[0]}|{round(x[2] - x[3], 2):.2f}"
         difs = [x for x in filas if abs(round(x[2] - x[3], 2)) >= 0.005 and clave(x) not in ign]
         omit = [x for x in filas if abs(round(x[2] - x[3], 2)) >= 0.005 and clave(x) in ign]
+        if solo_revisar:
+            return len(difs)
         if omit:
             txt += "\n\nNo se recuerdan (pidió no volver a recordarlos): " + ", ".join(x[0].split(" (")[0] for x in omit)
         if not difs:
@@ -1290,50 +1337,33 @@ class App:
         messagebox.showinfo("Cuadrar valores Fact & Drio. Gral", f"Ajustes grabados: {hechos}\n"
                             f"No se volverán a recordar: {norec}\nRechazados (siguen con diferencia): {len(difs) - hechos - norec}")
 
-    def pasar_caja_chica(self):
-        """Si 'Segunda caja chica' o la cuenta 'en tránsito' tienen balance mayor que cero, ofrece pasarlo
-        a una cuenta activa (Canopolis o Miguel Canahuate BHD). Siempre pregunta y se revisa el asiento antes de OK."""
-        import unicodedata
-        def norm(s):
-            return "".join(ch for ch in unicodedata.normalize("NFD", (s or "").lower()) if unicodedata.category(ch) != "Mn")
-        gl = self.gl
-        for clave in ("segunda caja chica", "en transito"):
-            hoy = datetime.date.today()
-            ctas = gl.cuentas()
-            for caja in [c for c in ctas if clave in norm(c["name"])]:
-                saldo = round(dict((c["id"], v) for c, v in gl.balanza(hoy.year, hoy.month)).get(caja["id"], 0), 2)
-                if saldo <= 0: continue
-                nom = f"{caja['code']} {caja['name']}"
-                destinos = [c for c in ctas if not c["suspended"] and c["id"] != caja["id"] and
-                            any(x in norm(c["name"]) for x in ("canopolis", "miguel canahuate"))]
-                if not destinos:
-                    messagebox.showwarning(nom, f"{nom} tiene balance {m2(saldo)}, pero no encontré activas "
-                                           "las cuentas Canopolis ni Miguel Canahuate BHD en el catálogo."); continue
-                top = tk.Toplevel(self.root); top.title(f"Balance de {caja['name']}"); top.transient(self.root); top.grab_set()
-                top.resizable(False, False)
-                ttk.Label(top, text=f"{nom} tiene un balance de {m2(saldo)}.\n\n"
-                                    "¿Desea pasar ese balance a otra cuenta?", justify="left", padding=14).pack(anchor="w")
-                elegido = {"c": None}
-                for c in destinos:
-                    ttk.Button(top, text=f"Pasar a {c['code']} {c['name']}", width=50,
-                               command=lambda c=c: (elegido.update(c=c), top.destroy())).pack(padx=14, pady=3)
-                ttk.Button(top, text="No pasar el balance", width=50, command=top.destroy).pack(padx=14, pady=(8, 14))
-                self.root.wait_window(top)
-                c = elegido["c"]
-                if not c: continue
-                pre = [dict(amount=saldo, code=c["code"], sub1=None, sub2=None, sub3=None, name=""),
-                       dict(amount=-saldo, code=caja["code"], sub1=None, sub2=None, sub3=None, name="")]
-                d = ui_contab.AsientoDialog(self.root, gl, modo="guardar", titulo=f"Pasar balance de {caja['name']}",
-                                            info=f"Débito {c['code']} {c['name']}   Crédito {nom}   Monto {m2(saldo)}\n"
-                                                 "Revise el asiento y dé OK para grabarlo.",
-                                            descr=f"Traspaso balance {caja['name'].lower()} a {c['name']}", fecha=hoy, prellenar=pre)
-                self.root.wait_window(d)
-                if d.result:
-                    self.refresh_all()
-                    messagebox.showinfo(nom, f"Se pasó {m2(saldo)} a {c['code']} {c['name']}.")
+    def hay_pendientes(self):
+        """Para el parpadeo del botón: documentos sin asiento, balances por depositar o diferencias por cuadrar."""
+        a = (self.gl.arranque() or "")[:10]
+        if not a: return False
+        try:
+            if self.pendientes_contables(a, datetime.date.today().isoformat()): return True
+            if self.balances_por_pasar(): return True
+            return bool(self.cuadrar_valores(solo_revisar=True))
+        except Exception:
+            return False
+
+    def revisar_todo(self):
+        """Un solo botón: 1) asientos pendientes de Facturación, 2) depósito de 2da caja chica / en tránsito,
+        3) cuadre de valores Facturación vs Diario General."""
+        if not messagebox.askyesno("Revisar Facturación y Diario",
+                                   "Se hace en orden:\n\n   1. Asientos pendientes de Facturación\n"
+                                   "   2. Depositar balance 2da caja chica / en tránsito\n"
+                                   "   3. Cuadrar valores Facturación y Diario General\n\n"
+                                   "Cada asiento lo aprueba, lo cambia o lo rechaza usted.\n\n¿Empezar?"):
+            return
+        self.contabilizar_pendientes()
+        if self.balances_por_pasar():
+            self.pasar_caja_chica()
+        self.cuadrar_valores()
+        self.refresh_all()
 
     def contabilizar_pendientes(self):
-        self.pasar_caja_chica()
         hoy = datetime.date.today()
         rg = ui_contab.pedir_rango(self, "Contabilizar asientos pendientes", dmy(hoy.replace(day=1)), dmy(hoy))
         if not rg: return
