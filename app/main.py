@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.1"
+VERSION = "1.2"
 NOMBRE = "Diana"
 
 
@@ -1083,7 +1083,7 @@ class App:
         self.diario = ui_contab.DiarioTab(self)
         self.tab_reportes(ttk.Frame(nb)); self.tab_respaldo(ttk.Frame(nb)); self.tab_config(ttk.Frame(nb))
         self.catalogo = ui_contab.CuentasTab(self, self.nb_cfg)
-        self.rep_cont = ui_contab.ReportesContTab(self, self.rep_cont_box, self.nb_cfg)
+        self.rep_cont = ui_contab.ReportesContTab(self, self.rep_cont_box, self.nb_cfg, self.resp_cont_box)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.refresh_all()
         if not self.db.one("SELECT 1 FROM invoices LIMIT 1"):
@@ -2132,6 +2132,7 @@ class App:
         box = ttk.Frame(fr); box.pack(anchor="nw", padx=20, pady=20)
         ttk.Button(box, text="Importar respaldo de Monica (.zip)", command=lambda: self.importar(True), width=45).pack(anchor="w", pady=4)
         ttk.Button(box, text="Importar respaldo de Monica (carpeta)", command=lambda: self.importar(False), width=45).pack(anchor="w", pady=4)
+        self.resp_cont_box = ttk.Frame(box); self.resp_cont_box.pack(anchor="w")
         ttk.Button(box, text="Hacer respaldo ahora", command=self.respaldar, width=45).pack(anchor="w", pady=4)
         ttk.Button(box, text="Restaurar un respaldo de este programa", command=self.restaurar, width=45).pack(anchor="w", pady=4)
         ttk.Button(box, text="Abrir carpeta del programa", command=lambda: open_file(self.db.loc), width=45).pack(anchor="w", pady=4)

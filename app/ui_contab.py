@@ -697,7 +697,7 @@ class CuentasTab:
 # =====================================================================================  pestaña Reportes contables
 class ReportesContTab:
     """Reportes contables (van dentro de la pestaña Reportes) y ajustes de contabilidad (van en Configuración)."""
-    def __init__(self, app, rep_parent, cfg_nb):
+    def __init__(self, app, rep_parent, cfg_nb, resp_parent):
         self.app = app; self.gl = app.gl
         hoy = datetime.date.today()
         # ---- reportes contables, dentro de la pestaña Reportes
@@ -714,9 +714,6 @@ class ReportesContTab:
             ttk.Button(box, text=t, width=40, command=lambda fn=fn, nom=nom: self.run(fn, nom)).pack(anchor="w", pady=3)
         ttk.Button(box, text="Diario General (PDF)", width=40, command=self.diario_pdf).pack(anchor="w", pady=3)
         ttk.Button(box, text="Mayor de una cuenta (PDF)", width=40, command=self.mayor_pdf).pack(anchor="w", pady=3)
-        ttk.Label(box, text="Año continuo: no hay que cerrar el año.\nLos ingresos y gastos empiezan en cero cada 1 de enero\n"
-                            "y lo de años anteriores sale en Ganancias retenidas.",
-                  justify="left", foreground="#555").pack(anchor="w", pady=(10, 0))
         # ---- ajustes de contabilidad, dentro de Configuración
         fr = ttk.Frame(cfg_nb); cfg_nb.add(fr, text="Contabilidad")
         imp = ttk.Frame(fr, padding=20); imp.pack(anchor="nw", fill="x")
@@ -735,13 +732,14 @@ class ReportesContTab:
         H["fecha_entry"](bl, self.vbloq).grid(row=1, column=1, padx=6)
         ttk.Button(bl, text="Bloquear", command=self.bloquear).grid(row=1, column=2)
         ttk.Button(bl, text="Quitar bloqueo", command=self.desbloquear).grid(row=1, column=3, padx=4)
-        o = ttk.LabelFrame(imp, text="Asientos de Facturación e importación", padding=10); o.pack(anchor="w", fill="x", pady=6)
+        o = ttk.LabelFrame(imp, text="Asientos de Facturación", padding=10); o.pack(anchor="w", fill="x", pady=6)
         ttk.Button(o, text="Cuentas automáticas (asientos de Facturación)", width=44,
                    command=lambda: CuentasAutoDialog(self.app.root, self.gl)).pack(anchor="w", pady=2)
-        ttk.Button(o, text="Importar contabilidad anterior (.zip)", width=44,
-                   command=lambda: self.importar(True)).pack(anchor="w", pady=2)
-        ttk.Button(o, text="Importar contabilidad anterior (carpeta)", width=44,
-                   command=lambda: self.importar(False)).pack(anchor="w", pady=2)
+        # ---- importar la contabilidad anterior, en la pestaña Respaldo
+        ttk.Button(resp_parent, text="Importar contabilidad anterior (.zip)", width=45,
+                   command=lambda: self.importar(True)).pack(anchor="w", pady=4)
+        ttk.Button(resp_parent, text="Importar contabilidad anterior (carpeta)", width=45,
+                   command=lambda: self.importar(False)).pack(anchor="w", pady=4)
 
     def diario_pdf(self):
         rg = pedir_rango(self.app, "Diario General en PDF")
