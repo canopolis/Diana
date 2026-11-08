@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.15"
+VERSION = "1.16"
 NOMBRE = "Diana"
 
 
@@ -1127,6 +1127,9 @@ class App:
             k = h["kind"]
             if k == "G" and (h["factura"] or 0): continue
             if k == "O" and h["status"] != "Recibida": continue
+            if k in ("NC", "ND") and h["factura"]:
+                fi = db.one("SELECT date FROM invoices WHERE nro=?", (h["factura"],))
+                if fi and (fi[0] or "")[:10] < d1: continue   # nota de una factura anterior al rango
             ref = f"{k}:{h['nro']}"
             if not ok(ref, h["date"]): continue
             ls = lns(db.q("SELECT * FROM olines WHERE kind=? AND nro=? ORDER BY pos", (k, h["nro"])))
@@ -1144,6 +1147,7 @@ class App:
                       "WHERE p.date BETWEEN ? AND ? ORDER BY p.date, p.id", (d1, d2)):
             ref = f"PAGO:{p['id']}"
             if not ok(ref, p["date"]): continue
+            if (p["fdate"] or "")[:10] < d1: continue   # cobro de una factura anterior al rango: ya está en el diario
             out.append(dict(fecha=p["date"][:10], ref=ref, tipo="Cobro", titulo=f"Asiento del cobro de la factura {p['nro']}",
                             info=f"COBRO con fecha {fd(p['date'])} de la factura {p['nro']} (factura con fecha {fd(p['fdate'])})   {p['name'] or ''}\nMonto {m2(p['amount'] or 0)}   Forma: {p['method'] or ''}",
                             descr=f"Cobro factura {p['nro']} {p['name'] or ''}".strip(), op="cobro", montos=dict(monto=p["amount"] or 0)))
@@ -1151,6 +1155,7 @@ class App:
                       "WHERE p.date BETWEEN ? AND ? ORDER BY p.date, p.id", (d1, d2)):
             ref = f"APPAGO:{p['id']}"
             if not ok(ref, p["date"]): continue
+            if (p["fdate"] or "")[:10] < d1: continue   # pago de una compra anterior al rango
             out.append(dict(fecha=p["date"][:10], ref=ref, tipo="Pago a suplidor", titulo=f"Asiento del pago de la compra {p['nro']}",
                             info=f"PAGO A SUPLIDOR con fecha {fd(p['date'])}, compra {p['nro']} (compra con fecha {fd(p['fdate'])})   {p['name'] or ''}\nMonto {m2(p['amount'] or 0)}   Forma: {p['method'] or ''}",
                             descr=f"Pago compra {p['nro']} {p['name'] or ''}".strip(), op="pago", montos=dict(monto=p["amount"] or 0)))
