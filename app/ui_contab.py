@@ -478,12 +478,16 @@ class DiarioTab:
         sb.pack(side="right", fill="y"); self.tv.pack(fill="both", expand=True)
         self.tv.bind("<Double-1>", lambda e: self.editar())
         acts = [("Nuevo", self.nuevo), ("Editar", self.editar), ("Eliminar", self.eliminar), ("Copiar", self.copiar),
-                ("Diario en PDF", self.pdf), ("Contabilizar asientos pendientes", self.app.contabilizar_pendientes),
-                ("Pasar balance en tránsito / 2da caja chica", self.pasar_balances)]
+                ("Diario en PDF", self.pdf), ("Contabilizar asientos pendientes", self.app.contabilizar_pendientes)]
         for t, cmd in acts:
             ttk.Button(b, text=t, command=cmd).pack(side="left", padx=3)
         self.lbl = ttk.Label(b, text=""); self.lbl.pack(side="right", padx=8)
-        self.lbl_bal = tk.Label(fr, text="", bg="#fde2e1", fg="#9b1c1c", anchor="w", font=("Segoe UI", 10, "bold"), padx=8)
+        # se activa y parpadea solo cuando hay balance en 2da caja chica o en tránsito
+        self.btn_dep = tk.Button(b, text="Depositar balance\n2da caja chica / en tránsito", command=self.pasar_balances,
+                                 state="disabled", relief="raised", padx=8)
+        self.btn_dep.pack(side="left", padx=3)
+        self._dep_bg = self.btn_dep.cget("bg"); self._dep_on = False; self._dep_tick = False
+        self._parpadeo()
         menu_tabla(self.tv, app.root, [("Nuevo", self.nuevo), ("Editar", self.editar), ("Ver asiento", self.editar),
                                        ("Copiar", self.copiar), ("Eliminar", self.eliminar), ("-", None),
                                        ("Buscar", lambda: e.focus_set()), ("Filtrar por fechas", lambda: self.load()),
@@ -526,18 +530,25 @@ class DiarioTab:
         self.aviso_balances()
 
     def aviso_balances(self):
-        """Recordatorio arriba del diario cuando hay balance en tránsito o en 2da caja chica."""
+        """Activa el botón Depositar si hay balance positivo en 2da caja chica o en tránsito."""
         try:
             bal = self.app.balances_por_pasar()
         except Exception:
             bal = []
-        if bal:
-            self.lbl_bal.config(text="   Balance por pasar:  " + "   |   ".join(f"{c['name']}: {m2(v)}" for c, v in bal)
-                                + "      (botón 'Pasar balance en tránsito / 2da caja chica')")
-            if not self.lbl_bal.winfo_ismapped():
-                self.lbl_bal.pack(fill="x", side="top", before=self.sb)
-        else:
-            self.lbl_bal.pack_forget()
+        self._dep_on = bool(bal)
+        self.btn_dep.config(state="normal" if bal else "disabled")
+        if not bal:
+            self.btn_dep.config(bg=self._dep_bg, fg="black")
+
+    def _parpadeo(self):
+        if self._dep_on:
+            self._dep_tick = not self._dep_tick
+            self.btn_dep.config(bg="#d93025" if self._dep_tick else "#ffd54f", fg="white" if self._dep_tick else "black",
+                                activebackground="#ffd54f")
+        try:
+            self.btn_dep.after(600, self._parpadeo)
+        except tk.TclError:
+            pass
 
     def pasar_balances(self):
         if not self.app.balances_por_pasar():
