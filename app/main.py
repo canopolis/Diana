@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.23"
+VERSION = "1.24"
 NOMBRE = "Diana"
 
 
@@ -1421,7 +1421,7 @@ class App:
             return len(difs)
         if not self._ventana_cuadre(filas, omit, difs, per, hoy):
             return
-        hechos = norec = 0
+        hechos = norec = despues = 0
         for i, (n, c, f, d, s) in enumerate(difs, 1):
             dif = round((f - d) * s, 2)
             if n.startswith("Inventario") and not messagebox.askyesno(
@@ -1438,14 +1438,17 @@ class App:
                                                f"{m2(abs(dif))} {'débito' if dif > 0 else 'crédito'}\n"
                                                "Escriba o busque (F2) la contrapartida en la segunda línea. OK = aprobar, Cancelar = rechazar.",
                                           descr=f"Ajuste {n.split(' (')[0].lower()} para cuadrar con Facturación", fecha=hoy, prellenar=pre,
-                                          no_recordar=True)
+                                          no_recordar=True, hacer_despues=True)
             self.root.wait_window(dlg)
-            if dlg.result == "NOREC":
+            if dlg.result == "DESPUES":
+                despues += 1
+            elif dlg.result == "NOREC":
                 ign.add(clave((n, c, f, d, s))); db.set_cfg("gl_cuadre_ignorar", "\n".join(sorted(ign))); norec += 1
             elif dlg.result: hechos += 1
         self.refresh_all()
         messagebox.showinfo("Cuadrar valores Fact & Drio. Gral", f"Ajustes grabados: {hechos}\n"
-                            f"No se volverán a recordar: {norec}\nRechazados (siguen con diferencia): {len(difs) - hechos - norec}")
+                            f"Para hacer después: {despues}\nNo se volverán a recordar: {norec}\n"
+                            f"Rechazados (siguen con diferencia): {len(difs) - hechos - norec - despues}")
 
     def asientos_conduces(self):
         """Asientos de conduces (de antes de la 1.8): los conduces ya no llevan asiento y duplican el costo."""
@@ -1505,6 +1508,7 @@ class App:
             bf.pack(anchor="e", padx=14, pady=10)
             ttk.Button(bf, text="Revisar ajustes", width=16,
                        command=lambda: (res.update(ok=True), top.destroy())).pack(side="left", padx=4)
+            ttk.Button(bf, text="Hacer después", width=14, command=top.destroy).pack(side="left", padx=4)
             ttk.Button(bf, text="Cerrar", width=12, command=top.destroy).pack(side="left", padx=4)
         else:
             tk.Label(top, text="✔ Todo cuadra. No hace falta ajuste." if not omit else "✔ No hay ajustes por revisar.",
@@ -1526,34 +1530,54 @@ class App:
         except Exception:
             return False
 
+    def _preguntar_revisar(self, titulo, texto):
+        """Confirmación con tres botones: Sí (empezar), Hacer después, Cancelar. True solo con Sí."""
+        top = tk.Toplevel(self.root); top.title(titulo); top.transient(self.root); top.grab_set(); top.resizable(False, False)
+        ttk.Label(top, text=texto, justify="left", padding=16).pack(anchor="w")
+        res = {"ok": False}
+        bf = ttk.Frame(top, padding=(16, 0, 16, 14)); bf.pack(anchor="e")
+        ttk.Button(bf, text="Sí, empezar", width=14, command=lambda: (res.update(ok=True), top.destroy())).pack(side="left", padx=4)
+        ttk.Button(bf, text="Hacer después", width=14, command=top.destroy).pack(side="left", padx=4)
+        ttk.Button(bf, text="Cancelar", width=12, command=top.destroy).pack(side="left", padx=4)
+        top.bind("<Escape>", lambda e: top.destroy())
+        self.root.wait_window(top)
+        return res["ok"]
+
     def revisar_todo(self):
         """Un solo botón: 1) asientos pendientes de Facturación, 2) depósito de 2da caja chica / en tránsito,
         3) cuadre de valores Facturación vs Diario General."""
-        if not messagebox.askyesno("Revisar Facturación y Diario",
+        if not self._preguntar_revisar("Revisar Facturación y Diario",
                                    "Se hace en orden:\n\n   1. Asientos pendientes de Facturación\n"
                                    "   2. Cuadrar valores Facturación y Diario General\n\n"
                                    "Cada asiento lo aprueba, lo cambia o lo rechaza usted.\n\n¿Empezar?"):
             return
         if self.asientos_conduces():
             self.borrar_asientos_conduces()
-        self.contabilizar_pendientes()
+        self.contabilizar_pendientes(todos=True)
         directas = self.facturas_cobradas_directo()
         if directas:
             self.cobradas_directo(directas)
         self.cuadrar_valores()
         self.refresh_all()
 
-    def contabilizar_pendientes(self):
+    def contabilizar_pendientes(self, todos=False):
+        """todos=True (botón Revisar): sin pedir fechas ni confirmar; salen TODOS los pendientes desde la fecha de
+        arranque hasta hoy (y los de 'Hacer después' de cualquier fecha), uno por uno."""
         hoy = datetime.date.today()
-        rg = ui_contab.pedir_rango(self, "Contabilizar asientos pendientes", dmy(hoy.replace(day=1)), dmy(hoy))
-        if not rg: return
+        if todos:
+            rg = ((self.gl.arranque() or hoy.isoformat())[:10], hoy.isoformat())
+        else:
+            rg = ui_contab.pedir_rango(self, "Contabilizar asientos pendientes", dmy(hoy.replace(day=1)), dmy(hoy))
+            if not rg: return
         pend = self.pendientes_contables(*rg)
         if not pend:
-            messagebox.showinfo("Asientos pendientes", "No hay documentos de Facturación sin asiento en esas fechas."); return
+            if not todos:
+                messagebox.showinfo("Asientos pendientes", "No hay documentos de Facturación sin asiento en esas fechas.")
+            return
         cuenta = {}
         for p in pend: cuenta[p["tipo"]] = cuenta.get(p["tipo"], 0) + 1
         det = "\n".join(f"   {t}: {n}" for t, n in cuenta.items())
-        if not messagebox.askyesno("Asientos pendientes", f"Hay {len(pend)} documento(s) sin asiento:\n{det}\n\n"
+        if not todos and not messagebox.askyesno("Asientos pendientes", f"Hay {len(pend)} documento(s) sin asiento:\n{det}\n\n"
                                    "Se abre el asiento de cada uno ya lleno. Revíselo, cámbielo si hace falta y dé OK.\n"
                                    "Si ya lo registró a mano en el diario, pulse 'Ya está en el diario' y no se vuelve a pedir.\n"
                                    "Si cierra la ventana sin OK, ese documento se salta y queda pendiente.\n\n¿Empezar?"):
