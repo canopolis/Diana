@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.22"
+VERSION = "1.23"
 NOMBRE = "Diana"
 
 
@@ -1181,8 +1181,10 @@ class App:
         out = []
         gl.con.execute("CREATE TABLE IF NOT EXISTS gl_ya_en_diario(ref TEXT PRIMARY KEY, fecha TEXT)")
         ya = {r[0] for r in gl.con.execute("SELECT ref FROM gl_ya_en_diario")}
+        gl.con.execute("CREATE TABLE IF NOT EXISTS gl_despues(ref TEXT PRIMARY KEY, fecha TEXT)")
+        despues = {r[0] for r in gl.con.execute("SELECT ref FROM gl_despues")}   # 'Hacer después': siempre se proponen
         def ok(ref, fecha):
-            return d1 <= (fecha or "")[:10] <= d2 and ref not in ya and not gl.asiento_de(ref)
+            return (ref in despues or d1 <= (fecha or "")[:10] <= d2) and ref not in ya and not gl.asiento_de(ref)
         def fd(s):
             return dmy(parse_date(s[:10])) if s else ""
         def a_credito(fecha, vence, terms):
@@ -1191,7 +1193,8 @@ class App:
             return bool(vence) and (vence or "")[:10] > (fecha or "")[:10]
         def lns(rows):
             return [dict(qty=r["qty"] or 0, price=r["price"] or 0, cost=r["cost"] or 0, itbis=r["itbis"] or 0) for r in rows]
-        for h in db.q("SELECT * FROM invoices WHERE deleted=0 AND date BETWEEN ? AND ? ORDER BY date, nro", (d1, d2)):
+        for h in db.q("SELECT * FROM invoices WHERE deleted=0 AND (date BETWEEN ? AND ? OR 'F:'||nro IN (SELECT ref FROM gl_despues)) "
+                      "ORDER BY date, nro", (d1, d2)):
             ref = f"F:{h['nro']}"
             if not ok(ref, h["date"]): continue
             ls = lns(db.q("SELECT * FROM lines WHERE nro=? ORDER BY pos", (h["nro"],)))
@@ -1200,12 +1203,13 @@ class App:
                             info=f"FACTURA con fecha {fd(h['date'])}\n" + info_documento(db, "F", h["nro"], dict(h), ls, dsc, h["tipo"], h["ncf"]),
                             descr=f"Factura {h['nro']} {h['name'] or ''}".strip(), op="venta",
                             montos=dict(montos_doc(ls, dsc), fiscal=(h["tipo"] or 0) != 0)))
-        for h in db.q("SELECT * FROM odocs WHERE deleted=0 AND kind IN ('NC','ND','O') AND date BETWEEN ? AND ? "
+        for h in db.q("SELECT * FROM odocs WHERE deleted=0 AND kind IN ('NC','ND','O') AND (date BETWEEN ? AND ? "
+                      "OR kind||':'||nro IN (SELECT ref FROM gl_despues)) "
                       "ORDER BY date, nro", (d1, d2)):
             k = h["kind"]
             if k == "G" and (h["factura"] or 0): continue
             if k == "O" and h["status"] != "Recibida": continue
-            if k in ("NC", "ND") and h["factura"]:
+            if k in ("NC", "ND") and h["factura"] and ref not in despues:
                 fi = db.one("SELECT date FROM invoices WHERE nro=?", (h["factura"],))
                 if fi and (fi[0] or "")[:10] < d1: continue   # nota de una factura anterior al rango
             ref = f"{k}:{h['nro']}"
@@ -1222,20 +1226,20 @@ class App:
                             descr=f"{KIND_NAME[k]} {h['nro']} {h['name'] or ''}".strip(), op=op,
                             montos=dict(montos_doc(ls, dsc), devolucion=h["status"] == "Con devolución", fiscal=fiscal)))
         for p in db.q("SELECT p.*, i.name, i.date AS fdate, i.due AS fdue, i.terms AS fterms FROM payments p LEFT JOIN invoices i ON i.nro=p.nro "
-                      "WHERE p.date BETWEEN ? AND ? ORDER BY p.date, p.id", (d1, d2)):
+                      "WHERE (p.date BETWEEN ? AND ? OR 'PAGO:'||p.id IN (SELECT ref FROM gl_despues)) ORDER BY p.date, p.id", (d1, d2)):
             ref = f"PAGO:{p['id']}"
             if not ok(ref, p["date"]): continue
-            if (p["fdate"] or "")[:10] < d1 and not a_credito(p["fdate"], p["fdue"], p["fterms"]):
+            if (p["fdate"] or "")[:10] < d1 and not a_credito(p["fdate"], p["fdue"], p["fterms"]) and ref not in despues:
                 continue   # cobro de una factura de contado anterior al rango: ya está en el resumen de ese mes
             out.append(dict(fecha=p["date"][:10], ref=ref, tipo="Cobro", titulo=f"Asiento del cobro de la factura {p['nro']}",
                             info=f"COBRO con fecha {fd(p['date'])} de la factura {p['nro']} (factura con fecha {fd(p['fdate'])}"
                                  f"{', a crédito' if (p['fdate'] or '')[:10] < d1 else ''})   {p['name'] or ''}\nMonto {m2(p['amount'] or 0)}   Forma: {p['method'] or ''}",
                             descr=f"Cobro factura {p['nro']} {p['name'] or ''}".strip(), op="cobro", montos=dict(monto=p["amount"] or 0)))
         for p in db.q("SELECT p.*, o.name, o.date AS fdate, o.due AS fdue, o.terms AS fterms FROM ap_payments p LEFT JOIN odocs o ON o.kind='O' AND o.nro=p.nro "
-                      "WHERE p.date BETWEEN ? AND ? ORDER BY p.date, p.id", (d1, d2)):
+                      "WHERE (p.date BETWEEN ? AND ? OR 'APPAGO:'||p.id IN (SELECT ref FROM gl_despues)) ORDER BY p.date, p.id", (d1, d2)):
             ref = f"APPAGO:{p['id']}"
             if not ok(ref, p["date"]): continue
-            if (p["fdate"] or "")[:10] < d1 and not a_credito(p["fdate"], p["fdue"], p["fterms"]):
+            if (p["fdate"] or "")[:10] < d1 and not a_credito(p["fdate"], p["fdue"], p["fterms"]) and ref not in despues:
                 continue   # pago de una compra de contado anterior al rango
             out.append(dict(fecha=p["date"][:10], ref=ref, tipo="Pago a suplidor", titulo=f"Asiento del pago de la compra {p['nro']}",
                             info=f"PAGO A SUPLIDOR con fecha {fd(p['date'])}, compra {p['nro']} (compra con fecha {fd(p['fdate'])})   {p['name'] or ''}\nMonto {m2(p['amount'] or 0)}   Forma: {p['method'] or ''}",
@@ -1243,7 +1247,7 @@ class App:
         hoy_iso = datetime.date.today().isoformat()
         for m in db.q("SELECT s.rowid AS id, s.code, s.qty, s.date, s.cost, p.descr, p.cost AS pcost FROM stock_moves s "
                       "LEFT JOIN products p ON p.code=s.code WHERE s.kind='A' AND (s.date BETWEEN ? AND ? "
-                      "OR COALESCE(s.date,'')='')", (d1, d2)):
+                      "OR COALESCE(s.date,'')='' OR 'AJ:'||s.rowid IN (SELECT ref FROM gl_despues))", (d1, d2)):
             ref = f"AJ:{m['id']}"
             viejo = not m["date"]   # ajuste viejo sin fecha: se muestra una vez con fecha de hoy
             if not ok(ref, m["date"] or hoy_iso): continue
@@ -1562,6 +1566,9 @@ class App:
                 r = ui_contab.asiento_automatico(self.root, self.gl, p["ref"], p["descr"],
                                                  datetime.date.fromisoformat(p["fecha"]), p["op"], p["montos"],
                                                  f"{p['titulo']}   ({i} de {len(pend)})", p["info"], ya_en_diario=True)
+                if r == "DESPUES":
+                    saltados += 1
+                    continue
                 if r == "YA":
                     self.gl.con.execute("INSERT OR REPLACE INTO gl_ya_en_diario(ref, fecha) VALUES(?,?)",
                                         (p["ref"], datetime.date.today().isoformat()))

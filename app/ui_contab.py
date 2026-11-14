@@ -56,7 +56,7 @@ class AsientoDialog(tk.Toplevel):
     Facturación guarde el documento y el asiento juntos."""
 
     def __init__(self, parent, gl, jv_id=None, modo="guardar", titulo="Asiento de diario",
-                 info="", descr="", fecha=None, ref=None, source="GL JV", copiar_de=None, nuevo_cb=None, prellenar=None, ya_en_diario=False, no_recordar=False):
+                 info="", descr="", fecha=None, ref=None, source="GL JV", copiar_de=None, nuevo_cb=None, prellenar=None, ya_en_diario=False, no_recordar=False, hacer_despues=False):
         super().__init__(parent)
         self.gl = gl; self.jv_id = jv_id; self.modo = modo; self.ref = ref; self.source = source
         self.result = None; self.nuevo_cb = nuevo_cb
@@ -124,6 +124,9 @@ class AsientoDialog(tk.Toplevel):
         if modo == "guardar" and nuevo_cb:
             ttk.Button(pie, text="OK y Nuevo", command=lambda: self.ok(nuevo=True)).pack(side="right", padx=3)
         ttk.Button(pie, text="OK", command=self.ok).pack(side="right", padx=3)
+        if hacer_despues:
+            ttk.Button(pie, text="Hacer después",
+                       command=lambda: (setattr(self, "result", "DESPUES"), self.destroy())).pack(side="right", padx=3)
         if no_recordar:
             ttk.Button(pie, text="No volver a recordar este ajuste",
                        command=lambda: (setattr(self, "result", "NOREC"), self.destroy())).pack(side="right", padx=12)
@@ -395,15 +398,36 @@ def pedir_asiento_documento(parent, gl, ref, titulo, info, descr, fecha, op=None
     if not gl.arranque():
         return False
     d = AsientoDialog(parent, gl, jv_id=jv_id, modo="documento", titulo=titulo, info=info, descr=descr,
-                      fecha=fecha, ref=ref, source=ORIGEN.get(ref.split(":")[0], "Facturación"))
+                      fecha=fecha, ref=ref, source=ORIGEN.get(ref.split(":")[0], "Facturación"), hacer_despues=True)
     if jv_id:
         # al editar se respeta lo ya puesto, pero la fecha sigue a la del documento
         d.vfecha.set(H["dmy"](fecha))
     parent.wait_window(d)
     if not d.result:
         return None
+    if d.result == "DESPUES":
+        return dejar_para_despues(parent, gl, ref, jv_id)
     h, lineas = d.result
     return h, lineas, jv_id
+
+
+def dejar_para_despues(parent, gl, ref, jv_id=None):
+    """'Hacer después': el documento se guarda sin asiento y queda pendiente para hacerlo desde el Diario General
+    (botón 'Revisar Facturación y Diario'). Devuelve False (= sin asiento) o None si el usuario se arrepiente."""
+    if jv_id:
+        if not messagebox.askyesno("Hacer después", "Este documento ya tenía su asiento en el Diario General.\n\n"
+                                   "Para hacerlo después se quita ese asiento del diario (el documento no se toca)\n"
+                                   "y queda pendiente en 'Revisar Facturación y Diario'.\n\n¿Seguir?", parent=parent):
+            return None
+        try:
+            gl.borrar_asiento(jv_id)
+        except Exception as e:
+            messagebox.showwarning("Hacer después", f"No se pudo quitar el asiento: {e}", parent=parent)
+            return None
+    gl.con.execute("CREATE TABLE IF NOT EXISTS gl_despues(ref TEXT PRIMARY KEY, fecha TEXT)")
+    gl.con.execute("INSERT OR REPLACE INTO gl_despues(ref, fecha) VALUES(?,?)", (ref, datetime.date.today().isoformat()))
+    gl.con.commit()
+    return False
 
 
 def grabar_asiento_documento(parent, gl, r):
@@ -1112,12 +1136,14 @@ def asiento_automatico(parent, gl, ref, descr, fecha, op, montos, titulo="Asient
         pre.append(dict(amount=l["amount"], code=c["code"], sub1=None, sub2=None, sub3=None, name=""))
     d = AsientoDialog(parent, gl, jv_id=jv_id, modo="documento", titulo=titulo, info=info, descr=descr,
                       fecha=fecha, ref=ref, source=ORIGEN.get(ref.split(":")[0], "Facturación"), prellenar=pre,
-                      ya_en_diario=ya_en_diario)
+                      ya_en_diario=ya_en_diario, hacer_despues=True)
     d.vfecha.set(H["dmy"](fecha if not isinstance(fecha, str) else datetime.date.fromisoformat(fecha)))
     parent.wait_window(d)
     if not d.result:
         return None
     if d.result == "YA":
         return "YA"
+    if d.result == "DESPUES":
+        return "DESPUES" if ya_en_diario else dejar_para_despues(parent, gl, ref, jv_id)
     h, lineas = d.result
     return h, lineas, jv_id
