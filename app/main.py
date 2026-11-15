@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.30"
+VERSION = "1.31"
 NOMBRE = "Diana"
 
 
@@ -1603,21 +1603,25 @@ class App:
     def revisar_todo(self):
         """Un solo botón: 1) asientos pendientes de Facturación, 2) depósito de 2da caja chica / en tránsito,
         3) cuadre de valores Facturación vs Diario General."""
+        hoy = datetime.date.today()
+        rg = ui_contab.pedir_rango(self, "Conciliar Facturación y Diario",
+                                   dmy(parse_date((self.gl.arranque() or hoy.isoformat())[:10])), dmy(hoy))
+        if not rg: return
         if self.asientos_conduces():
             self.borrar_asientos_conduces()
-        self.contabilizar_pendientes(todos=True)
+        self.contabilizar_pendientes(todos=True, rg=rg)
         directas = self.facturas_cobradas_directo()
         if directas:
             self.cobradas_directo(directas)
         self.cuadrar_valores()
         self.refresh_all()
 
-    def contabilizar_pendientes(self, todos=False):
+    def contabilizar_pendientes(self, todos=False, rg=None):
         """todos=True (botón Revisar): sin pedir fechas ni confirmar; salen TODOS los pendientes desde la fecha de
         arranque hasta hoy (y los de 'Hacer después' de cualquier fecha), uno por uno."""
         hoy = datetime.date.today()
         if todos:
-            rg = ((self.gl.arranque() or hoy.isoformat())[:10], hoy.isoformat())
+            rg = rg or ((self.gl.arranque() or hoy.isoformat())[:10], hoy.isoformat())
         else:
             rg = ui_contab.pedir_rango(self, "Contabilizar asientos pendientes", dmy(hoy.replace(day=1)), dmy(hoy))
             if not rg: return
