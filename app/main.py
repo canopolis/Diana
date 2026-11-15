@@ -10,9 +10,37 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.32"
+VERSION = "1.33"
 NOMBRE = "Diana"
 
+
+
+
+def nombre_asiento(tipo, nro, nombre=""):
+    """Nombre simple del asiento: 'Venta a X, factura 7313', 'Cobro de factura 7313, X', etc."""
+    nombre = (nombre or "").strip()
+    c = f", {nombre}" if nombre else ""
+    return {"F": f"Venta a {nombre}, factura {nro}" if nombre else f"Venta, factura {nro}",
+            "NC": f"Nota de crédito {nro}{c}", "ND": f"Nota de débito {nro}{c}", "O": f"Compra {nro}{c}",
+            "G": f"Conduce {nro}{c}", "PAGO": f"Cobro de factura {nro}{c}",
+            "APPAGO": f"Pago a suplidor, compra {nro}{c}"}.get(tipo, f"{tipo} {nro}{c}")
+
+def marcados_despues(db):
+    """* = documento con 'Hacer después' (el documento o su cobro/pago). Devuelve (refs, facturas_con_cobro, compras_con_pago)."""
+    try:
+        refs = {r[0] for r in db.con.execute("SELECT ref FROM gl_despues")}
+    except Exception:
+        return set(), set(), set()
+    fc = {r[0] for r in db.con.execute("SELECT nro FROM payments WHERE 'PAGO:'||id IN (SELECT ref FROM gl_despues)")}
+    try:
+        cp = {r[0] for r in db.con.execute("SELECT nro FROM ap_payments WHERE 'APPAGO:'||id IN (SELECT ref FROM gl_despues)")}
+    except Exception:
+        cp = set()
+    return refs, fc, cp
+
+
+def estrella(marca, nro):
+    return f"*{nro}" if marca else nro
 
 def _askyesno_si_no(title=None, message=None, **opts):
     """Pregunta con botones Sí / No (reemplaza el Yes/No de Windows)."""
@@ -750,7 +778,7 @@ class InvoiceEditor(tk.Toplevel):
                     "SELECT 1 FROM odocs WHERE kind='O' AND nro=? AND status='Recibida'", (h["nro"],))):
                 asiento = self.app.gl_doc(self, f"{self.kind}:{h['nro']}", f"Asiento de {KIND_NAME[self.kind].lower()} {h['nro']}",
                                           info_documento(self.db, self.kind, h["nro"], h, self.lines, dsc),
-                                          f"{KIND_NAME[self.kind]} {h['nro']} {h.get('name', '')}".strip(), d,
+                                          nombre_asiento(self.kind, h['nro'], h.get('name', '')), d,
                                           {"NC": "nc", "ND": "nd", "G": "conduce", "O": "compra"}[self.kind],
                                           dict(montos_doc(self.lines, dsc), devolucion=h.get("status") == "Con devolución",
                                                fiscal=self.kind in ("NC", "ND") and bool(self.db.one(
@@ -782,7 +810,7 @@ class InvoiceEditor(tk.Toplevel):
             return
         asiento = self.app.gl_doc(self, f"F:{h['nro']}", f"Asiento de la factura {h['nro']}",
                                   info_documento(self.db, "F", h["nro"], h, self.lines, dsc, tipo, h.get("ncf")),
-                                  f"Factura {h['nro']} {h.get('name', '')}".strip(), d,
+                                  nombre_asiento("F", h['nro'], h.get('name', '')), d,
                                   "venta", dict(montos_doc(self.lines, dsc), fiscal=(tipo or 0) != 0))
         if asiento is None:
             return
@@ -876,6 +904,7 @@ class DocTab:
             messagebox.showwarning("Fechas", str(e)); return
         self.tv.delete(*self.tv.get_children())
         s = self.vs.get().strip().lower(); n = 0; tot = 0
+        mrc = marcados_despues(self.db)
         for r in self.db.q("SELECT * FROM odocs WHERE kind=? AND deleted=0 AND date BETWEEN ? AND ? ORDER BY nro DESC",
                            (self.kind, d1, d2)):
             if s and s not in f"{r['nro']} {r['client']} {r['name']}".lower(): continue
@@ -885,7 +914,8 @@ class DocTab:
                 est = r["status"] or "Pendiente"
             else:
                 est = f"Facturada ({r['factura']})" if r["factura"] else ""
-            self.tv.insert("", "end", iid=str(r["nro"]), values=(r["nro"], dmy(r["date"]), r["client"], r["name"],
+            mk = f"{self.kind}:{r['nro']}" in mrc[0] or (self.kind == "O" and r["nro"] in mrc[2])
+            self.tv.insert("", "end", iid=str(r["nro"]), values=(estrella(mk, r["nro"]), dmy(r["date"]), r["client"], r["name"],
                                                                  m2(r["total"]), est))
             n += 1; tot += r["total"]
         self.lbl.config(text=f"{n} documentos   Total {m2(tot)}")
@@ -1105,6 +1135,10 @@ class App:
         if r:
             ui_contab.grabar_asiento_documento(parent, self.gl, r)
             ref = (r[0] or {}).get("ref") or ""
+            try:   # ya tiene su asiento: se le quita el *
+                self.gl.con.execute("DELETE FROM gl_despues WHERE ref=?", (ref,)); self.gl.con.commit()
+            except Exception:
+                pass
             if ref.startswith("F:"):
                 try:
                     self.cobradas_directo([int(ref[2:])], parent)
@@ -1238,7 +1272,7 @@ class App:
                             + ("  (NO CUADRA con la factura)" if mal else ""),
                             info=(NOCUADRA if mal else "")
                                  + f"FACTURA con fecha {fd(h['date'])}\n" + info_documento(db, "F", h["nro"], dict(h), ls, dsc, h["tipo"], h["ncf"]),
-                            descr=f"Factura {h['nro']} {h['name'] or ''}".strip(), op="venta", montos=mnt))
+                            descr=nombre_asiento("F", h['nro'], h['name']), op="venta", montos=mnt))
         for h in db.q("SELECT * FROM odocs WHERE deleted=0 AND kind IN ('NC','ND','O') AND (date BETWEEN ? AND ? "
                       "OR kind||':'||nro IN (SELECT ref FROM gl_despues)) "
                       "ORDER BY date, nro", (d1, d2)):
@@ -1262,7 +1296,7 @@ class App:
             out.append(dict(fecha=h["date"][:10], ref=ref, tipo=KIND_NAME[k], titulo=f"Asiento de {KIND_NAME[k].lower()} {h['nro']}"
                             + ("  (NO CUADRA)" if mal else ""),
                             info=(NOCUADRA if mal else "") + f"{KIND_NAME[k].upper()} con fecha {fd(h['date'])}\n" + info_documento(db, k, h["nro"], dict(h), ls, dsc),
-                            descr=f"{KIND_NAME[k]} {h['nro']} {h['name'] or ''}".strip(), op=op, montos=mnt))
+                            descr=nombre_asiento(k, h['nro'], h['name']), op=op, montos=mnt))
         for p in db.q("SELECT p.*, i.name, i.date AS fdate, i.due AS fdue, i.terms AS fterms FROM payments p LEFT JOIN invoices i ON i.nro=p.nro "
                       "WHERE (p.date BETWEEN ? AND ? OR 'PAGO:'||p.id IN (SELECT ref FROM gl_despues)) ORDER BY p.date, p.id", (d1, d2)):
             ref = f"PAGO:{p['id']}"
@@ -1273,7 +1307,7 @@ class App:
             out.append(dict(fecha=p["date"][:10], ref=ref, tipo="Cobro", titulo=f"Asiento del cobro de la factura {p['nro']}" + ("  (NO CUADRA)" if mal else ""),
                             info=(NOCUADRA if mal else "") + f"COBRO con fecha {fd(p['date'])} de la factura {p['nro']} (factura con fecha {fd(p['fdate'])}"
                                  f"{', a crédito' if (p['fdate'] or '')[:10] < d1 else ''})   {p['name'] or ''}\nMonto {m2(p['amount'] or 0)}   Forma: {p['method'] or ''}",
-                            descr=f"Cobro factura {p['nro']} {p['name'] or ''}".strip(), op="cobro", montos=dict(monto=p["amount"] or 0)))
+                            descr=nombre_asiento("PAGO", p['nro'], p['name']), op="cobro", montos=dict(monto=p["amount"] or 0)))
         for p in db.q("SELECT p.*, o.name, o.date AS fdate, o.due AS fdue, o.terms AS fterms FROM ap_payments p LEFT JOIN odocs o ON o.kind='O' AND o.nro=p.nro "
                       "WHERE (p.date BETWEEN ? AND ? OR 'APPAGO:'||p.id IN (SELECT ref FROM gl_despues)) ORDER BY p.date, p.id", (d1, d2)):
             ref = f"APPAGO:{p['id']}"
@@ -1283,7 +1317,7 @@ class App:
                 continue   # pago de una compra de contado anterior al rango
             out.append(dict(fecha=p["date"][:10], ref=ref, tipo="Pago a suplidor", titulo=f"Asiento del pago de la compra {p['nro']}" + ("  (NO CUADRA)" if mal else ""),
                             info=(NOCUADRA if mal else "") + f"PAGO A SUPLIDOR con fecha {fd(p['date'])}, compra {p['nro']} (compra con fecha {fd(p['fdate'])})   {p['name'] or ''}\nMonto {m2(p['amount'] or 0)}   Forma: {p['method'] or ''}",
-                            descr=f"Pago compra {p['nro']} {p['name'] or ''}".strip(), op="pago", montos=dict(monto=p["amount"] or 0)))
+                            descr=nombre_asiento("APPAGO", p['nro'], p['name']), op="pago", montos=dict(monto=p["amount"] or 0)))
         hoy_iso = datetime.date.today().isoformat()
         for m in db.q("SELECT s.rowid AS id, s.code, s.qty, s.date, s.cost, p.descr, p.cost AS pcost FROM stock_moves s "
                       "LEFT JOIN products p ON p.code=s.code WHERE s.kind='A' AND (s.date BETWEEN ? AND ? "
@@ -1370,7 +1404,7 @@ class App:
                     q = min(sobra, v); sobra = round(sobra - q, 2); v = round(v - q, 2)
                 if v > 0.005:
                     import re
-                    mm = re.match(r"\s*cobro factura\s+\S+\s+(.*)", r["descr"] or "", re.I)
+                    mm = re.match(r"\s*cobro (?:de )?factura\s+[^\s,]+,?\s+(.*)", r["descr"] or "", re.I)
                     simple = f"Depósito cobro venta a {mm.group(1).strip()}" if mm and mm.group(1).strip() else f"Depósito {(r['descr'] or '').strip()}".strip()
                     items.append((v, f"asiento {r['number'] or ''} del {dmy(parse_date(r['date'][:10]))}  {r['descr'] or ''}".strip(), simple))
             if not items: items = [(saldo, "", f"Depósito {caja['name'].lower()}")]
@@ -1656,6 +1690,7 @@ class App:
                 if r == "YA":
                     self.gl.con.execute("INSERT OR REPLACE INTO gl_ya_en_diario(ref, fecha) VALUES(?,?)",
                                         (p["ref"], datetime.date.today().isoformat()))
+                    self.gl.con.execute("DELETE FROM gl_despues WHERE ref=?", (p["ref"],))   # no se recuerda: se quita el *
                     self.gl.con.commit(); marcados += 1
                     continue
                 if r:
@@ -1765,6 +1800,7 @@ class App:
         s = self.vs.get().strip().lower(); f = self.vf.get()
         pays = {r[0]: r[1] for r in self.db.q("SELECT nro, SUM(amount) FROM payments GROUP BY nro")}
         tot = 0; n = 0
+        mrc = marcados_despues(self.db)
         for r in self.db.q("SELECT * FROM invoices WHERE deleted=0 AND date BETWEEN ? AND ? ORDER BY nro DESC", (d1, d2)):
             saldo = round(r["saldo_base"] - pays.get(r["nro"], 0), 2)
             tipo = r["tipo"] if r["ncf"] else 0
@@ -1773,8 +1809,9 @@ class App:
             if f == "Sin NCF (pendientes)" and r["ncf"]: continue
             if f not in ("Todas", "Con saldo pendiente", "Sin NCF (pendientes)") and tipo_nombre(tipo) != f: continue
             estado = "Pagada" if saldo <= 0.005 else ("Vencida" if r["due"] and r["due"] < fmt_date(datetime.date.today()) else "Pendiente")
+            mk = f"F:{r['nro']}" in mrc[0] or r["nro"] in mrc[1]
             self.tv_v.insert("", "end", iid=str(r["nro"]), tags=(estado,), values=(
-                r["nro"], dmy(r["date"]), r["client"], r["name"], r["ncf"] or "(sin NCF)",
+                estrella(mk, r["nro"]), dmy(r["date"]), r["client"], r["name"], r["ncf"] or "(sin NCF)",
                 tipo_nombre(tipo), m2(r["total"]), m2(saldo), estado))
             tot += r["total"]; n += 1
         self.lbl_v.config(text=f"{n} facturas   Total {m2(tot)}")
@@ -1895,7 +1932,7 @@ class App:
                  ecf_cod=g["codigo_seguridad"], ecf_firma=g["fecha_firma"], ecf_qr=g["qr"])
         asiento = self.gl_doc(self.root, f"F:{nro}", f"Asiento de la factura {nro}",
                               info_documento(self.db, "F", nro, h, lines, 0, g["tipo"], g["ncf"]),
-                              f"Factura {nro} {b['name']}", g["fecha"] or datetime.date.today(),
+                              nombre_asiento("F", nro, b["name"]), g["fecha"] or datetime.date.today(),
                               "venta", dict(montos_doc(lines, 0), fiscal=(g["tipo"] or 0) != 0))
         if asiento is None:
             return
@@ -1996,7 +2033,7 @@ class App:
         asiento = self.gl_doc(self.root, f"PAGO:{sig}", f"Asiento del cobro de la factura {n}",
                               f"Cobro de la factura {n}   {inv['name'] if inv else ''}\nMonto {m2(monto)}   Forma: {forma}"
                               + (f"\nSaldo a favor del cliente (exceso): {m2(exceso)}" if exceso > 0.005 else ""),
-                              f"Cobro factura {n} {inv['name'] if inv else ''}".strip(), fecha, op, montos)
+                              nombre_asiento("PAGO", n, inv['name'] if inv else ''), fecha, op, montos)
         if asiento is None: return
         self.db.add_payment(n, monto, forma, fecha, nota)
         pid = self.db.one("SELECT MAX(id) FROM payments")[0]
@@ -2291,11 +2328,13 @@ class App:
     def load_cxp(self):
         self.tv_p2.delete(*self.tv_p2.get_children())
         hoy = datetime.date.today(); tot = 0
+        mrc = marcados_despues(self.db)
         for o, saldo in self.db.open_payables(self.pc.get().strip() or None):
             due = parse_date(o["due"]) or parse_date(o["date"])
             dias = (hoy - due).days if due else 0
+            mk = f"O:{o['nro']}" in mrc[0] or o["nro"] in mrc[2]
             self.tv_p2.insert("", "end", iid=str(o["nro"]), tags=("venc",) if dias > 0 else (), values=(
-                o["nro"], dmy(o["date"]), dmy(o["due"]), o["client"], o["name"], m2(o["total"]), m2(saldo),
+                estrella(mk, o["nro"]), dmy(o["date"]), dmy(o["due"]), o["client"], o["name"], m2(o["total"]), m2(saldo),
                 dias if dias > 0 else ""))
             tot += saldo
         self.lbl_p2.config(text=f"Total por pagar {m2(tot)}")
@@ -2335,7 +2374,7 @@ class App:
         sig = (self.db.one("SELECT MAX(id) FROM ap_payments")[0] or 0) + 1
         asiento = self.gl_doc(self.root, f"APPAGO:{sig}", f"Asiento del pago de la compra {n}",
                               f"Pago a suplidor, compra {n}   {o['name'] if o else ''}\nMonto {m2(monto)}   Forma: {forma}",
-                              f"Pago compra {n} {o['name'] if o else ''}".strip(), fecha, "pago", dict(monto=monto))
+                              nombre_asiento("APPAGO", n, o['name'] if o else ''), fecha, "pago", dict(monto=monto))
         if asiento is None: return
         try:
             self.db.add_ap_payment(n, monto, forma, fecha, nota)
@@ -2431,11 +2470,13 @@ class App:
         self.tv_x.delete(*self.tv_x.get_children())
         code = self.xc.get().strip() or None
         hoy = datetime.date.today(); tot = 0
+        mrc = marcados_despues(self.db)
         for inv, saldo in self.db.open_invoices(code):
             due = parse_date(inv["due"]) or parse_date(inv["date"])
             dias = (hoy - due).days if due else 0
+            mk = f"F:{inv['nro']}" in mrc[0] or inv["nro"] in mrc[1]
             self.tv_x.insert("", "end", iid=str(inv["nro"]), tags=("venc",) if dias > 0 else (), values=(
-                inv["nro"], dmy(inv["date"]), dmy(inv["due"]), inv["client"], inv["name"], m2(inv["total"]), m2(saldo),
+                estrella(mk, inv["nro"]), dmy(inv["date"]), dmy(inv["due"]), inv["client"], inv["name"], m2(inv["total"]), m2(saldo),
                 dias if dias > 0 else ""))
             tot += saldo
         self.lbl_x.config(text=f"Total por cobrar {m2(tot)}")
