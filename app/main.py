@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.29"
+VERSION = "1.30"
 NOMBRE = "Diana"
 
 
@@ -1395,7 +1395,7 @@ class App:
                     self.refresh_all()
                     messagebox.showinfo(nom, f"Se pasó {m2(saldo)} a {c['code']} {c['name']}.")
 
-    def cuadrar_valores(self, solo_revisar=False, rg=None):
+    def cuadrar_valores(self, solo_revisar=False):
         """Cuadrar valores Fact & Drio. Gral: compara Ventas, Inventario, CxC y CxP de Facturación (lo que manda)
         con el Diario General y sugiere un asiento de ajuste por cada diferencia. Cada asiento se aprueba (OK),
         se cambia y se aprueba, o se rechaza (Cancelar = no se graba y la diferencia sigue)."""
@@ -1405,7 +1405,6 @@ class App:
             if solo_revisar: return 0
             messagebox.showwarning("Cuadrar valores", "Falta la fecha de arranque en Configuración > Contabilidad."); return
         d1 = gl.arranque()[:10]; d2 = hoy.isoformat()
-        if rg: d1, d2 = rg   # período elegido en Conciliar (ventas de ese período)
         def cta(k):
             c = ui_contab.cta_auto(gl, k)
             return gl.cuenta(c) if c else None
@@ -1438,7 +1437,7 @@ class App:
                  ("Inventario (valor al " + dmy(hoy) + ")", cta("inventario"), inv_f, round(sal.get(cta("inventario")["id"], 0), 2), 1),
                  ("Cuentas por pagar (saldo al " + dmy(hoy) + ")", cta("cxp"), cxp_f, round(-sal.get(cta("cxp")["id"], 0), 2), -1)]
         cf, cl = cta("ventas_fiscal"), cta("ventas_libres")
-        per = f"del {dmy(parse_date(d1))} al {dmy(parse_date(d2))}"
+        per = f"del {dmy(parse_date(d1))} al {dmy(hoy)}"
         # cuentas de ventas que se usan en el diario (se pregunta una vez; se cambia en Configuración > Contabilidad)
         lista = db.cfg("gl_cuentas_ventas") or ""
         if not lista and solo_revisar:
@@ -1604,59 +1603,21 @@ class App:
     def revisar_todo(self):
         """Un solo botón: 1) asientos pendientes de Facturación, 2) depósito de 2da caja chica / en tránsito,
         3) cuadre de valores Facturación vs Diario General."""
-        hoy = datetime.date.today()
-        rg = ui_contab.pedir_rango(self, "Conciliar Facturación y Diario",
-                                   dmy(parse_date((self.gl.arranque() or hoy.isoformat())[:10])), dmy(hoy))
-        if not rg: return
         if self.asientos_conduces():
             self.borrar_asientos_conduces()
-        self.contabilizar_pendientes(todos=True, rg=rg)
-        self.asientos_sin_documento(rg)
+        self.contabilizar_pendientes(todos=True)
         directas = self.facturas_cobradas_directo()
         if directas:
             self.cobradas_directo(directas)
-        self.cuadrar_valores(rg=rg)
+        self.cuadrar_valores()
         self.refresh_all()
 
-    def asientos_sin_documento(self, rg):
-        """Asientos y contra-asientos del período que mueven Ventas / CxC / Inventario / Costo y no vienen de un
-        documento de Facturación (hechos a mano, reversos, ajustes). Salen uno por uno: OK = guardar cambios,
-        Cancelar = dejarlo como está (vuelve a salir), 'Ya revisado' = no vuelve a salir."""
-        gl, db = self.gl, self.db
-        gl.con.execute("CREATE TABLE IF NOT EXISTS gl_revisado(jv_id INTEGER PRIMARY KEY, fecha TEXT)")
-        ctas = {c for c in (ui_contab.cta_auto(gl, k) for k in ("ventas_fiscal", "ventas_libres", "cxc", "inventario", "costo")) if c}
-        for x in (db.cfg("gl_cuentas_ventas") or "").split(","):
-            c = gl.cuenta_por_codigo(x.strip()) if x.strip() else None
-            if c: ctas.add(c["id"])
-        if not ctas: return
-        q = ",".join("?" * len(ctas))
-        doc = ("F:", "NC:", "ND:", "O:", "PAGO:", "APPAGO:", "AJ:")
-        filas = gl.con.execute(f"SELECT DISTINCT j.id, j.number, j.date, j.descr, j.ref FROM gl_jv j JOIN gl_lines l ON l.jv_id=j.id "
-                               f"WHERE j.date BETWEEN ? AND ? AND l.account_id IN ({q}) "
-                               f"AND j.id NOT IN (SELECT jv_id FROM gl_revisado) ORDER BY j.date, j.id", (rg[0], rg[1], *ctas)).fetchall()
-        for r in filas:
-            ref = r["ref"] or ""
-            if ref.startswith(doc) and "#anulado" not in ref: continue   # asiento de un documento: ya se revisó arriba
-            det = gl.con.execute(f"SELECT c.code, c.name, SUM(l.amount) FROM gl_lines l JOIN gl_accounts c ON c.id=l.account_id "
-                                 f"WHERE l.jv_id=? AND l.account_id IN ({q}) GROUP BY c.id", (r["id"], *ctas)).fetchall()
-            info = (f"ASIENTO {'CONTRA-ASIENTO / ' if ref.startswith('REV:') or '#anulado' in ref else ''}SIN DOCUMENTO DE FACTURACIÓN "
-                    f"del {dmy(parse_date(r['date'][:10]))}: mueve " +
-                    "   ".join(f"{d[0]} {d[1]} {m2(d[2] or 0)}" for d in det) +
-                    "\nOK = guardar (si lo cambió)   Cancelar = dejarlo así   Ya revisado = no vuelve a salir")
-            d = ui_contab.AsientoDialog(self.root, gl, jv_id=r["id"], modo="guardar",
-                                        titulo=f"Asiento {r['number'] or ''} sin documento de Facturación", info=info,
-                                        hacer_despues=True, texto_despues="Ya revisado (no volver a mostrar)")
-            self.root.wait_window(d)
-            if d.result == "DESPUES":
-                gl.con.execute("INSERT OR REPLACE INTO gl_revisado(jv_id, fecha) VALUES(?,?)",
-                               (r["id"], datetime.date.today().isoformat())); gl.con.commit()
-
-    def contabilizar_pendientes(self, todos=False, rg=None):
+    def contabilizar_pendientes(self, todos=False):
         """todos=True (botón Revisar): sin pedir fechas ni confirmar; salen TODOS los pendientes desde la fecha de
         arranque hasta hoy (y los de 'Hacer después' de cualquier fecha), uno por uno."""
         hoy = datetime.date.today()
         if todos:
-            rg = rg or ((self.gl.arranque() or hoy.isoformat())[:10], hoy.isoformat())
+            rg = ((self.gl.arranque() or hoy.isoformat())[:10], hoy.isoformat())
         else:
             rg = ui_contab.pedir_rango(self, "Contabilizar asientos pendientes", dmy(hoy.replace(day=1)), dmy(hoy))
             if not rg: return
