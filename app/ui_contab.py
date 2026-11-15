@@ -500,7 +500,7 @@ class DiarioTab:
         cols = ("Período", "No.", "Origen", "Fecha", "Descripción", "Monto")
         self.tv = ttk.Treeview(fr, columns=cols, show="headings")
         for c, w in zip(cols, (80, 80, 90, 100, 520, 130)):
-            self.tv.heading(c, text=c, command=lambda c=c: self.ordenar(c))
+            self.tv.heading(c, text=c)
             self.tv.column(c, width=w, minwidth=w if c != "Descripción" else 200, anchor="center",
                            stretch=(c == "Descripción"))
         sb = ttk.Scrollbar(fr, orient="vertical", command=self.tv.yview); self.tv.configure(yscrollcommand=sb.set)
