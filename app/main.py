@@ -11,7 +11,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.34"
+VERSION = "1.35"
 NOMBRE = "Diana"
 
 
@@ -1518,13 +1518,28 @@ class App:
         txt += ("\n\nInventario de Facturación = existencia por último costo de compra (igual que el reporte "
                 "'Valor del inventario').")
         # ajustes que el usuario pidió no volver a recordar (concepto + diferencia exacta; si la diferencia cambia, vuelve a salir)
+        # documentos pendientes (con * o sin asiento): su monto NO se globaliza en un ajuste; se hacen uno por uno en Conciliar
+        pmov, npend = {}, 0
+        try:
+            for p in self.pendientes_contables(d1, d2):
+                if "NO CUADRA" in p["titulo"]: continue
+                npend += 1
+                for l in ui_contab.lineas_auto(gl, p["op"], p["montos"]):
+                    pmov[l["account_id"]] = pmov.get(l["account_id"], 0) + l["amount"]
+        except Exception:
+            pmov, npend = {}, 0
+        def pend_de(n, c):
+            ids = ids_v if n.startswith("Ventas, cuentas") else {c["id"]}
+            return round(sum(pmov.get(i, 0) for i in ids), 2)
+        filas_aj = [(n, c, f, round(d + s_ * pend_de(n, c), 2), s_) for n, c, f, d, s_ in filas]
         ign = set(x for x in (db.cfg("gl_cuadre_ignorar") or "").split("\n") if x)
         clave = lambda x: f"{x[0].split(' (')[0]}|{round(x[2] - x[3], 2):.2f}"
-        difs = [x for x in filas if abs(round(x[2] - x[3], 2)) >= 0.005 and clave(x) not in ign]
-        omit = [x for x in filas if abs(round(x[2] - x[3], 2)) >= 0.005 and clave(x) in ign]
+        difs = [x for x in filas_aj if abs(round(x[2] - x[3], 2)) >= 0.005 and clave(x) not in ign]
+        omit = [x for x in filas_aj if abs(round(x[2] - x[3], 2)) >= 0.005 and clave(x) in ign]
+        explicadas = npend and any(abs(round(a[2] - a[3], 2)) >= 0.005 for a in filas)
         if solo_revisar:
             return len(difs)
-        if not self._ventana_cuadre(filas, omit, difs, per, hoy):
+        if not self._ventana_cuadre(filas, omit, difs, per, hoy, npend if explicadas else 0):
             return
         hechos = norec = despues = 0
         for i, (n, c, f, d, s) in enumerate(difs, 1):
@@ -1575,7 +1590,7 @@ class App:
         if borrados: self.refresh_all()
         return borrados
 
-    def _ventana_cuadre(self, filas, omit, difs, per, hoy):
+    def _ventana_cuadre(self, filas, omit, difs, per, hoy, npend=0):
         """Tabla del cuadre: Concepto | Facturación | Diario General | Diferencia (verde = cuadra, rojo = diferencia).
         Devuelve True si el usuario quiere revisar los ajustes."""
         fuente = "Segoe UI" if sys.platform.startswith("win") else "DejaVu Sans"
@@ -1615,7 +1630,9 @@ class App:
                        command=lambda: (res.update(ok=True), top.destroy())).pack(side="left", padx=4)
             top.protocol("WM_DELETE_WINDOW", lambda: (res.update(ok=True), top.destroy()))
         else:
-            tk.Label(top, text="✔ Todo cuadra. No hace falta ajuste." if not omit else "✔ No hay ajustes por revisar.",
+            tk.Label(top, text=(f"✔ La diferencia es de {npend} documento(s) pendiente(s) (con *). Se asientan uno por uno en Conciliar, sin ajuste global."
+                                if npend else "✔ Todo cuadra. No hace falta ajuste." if not omit else "✔ No hay ajustes por revisar."),
+                     wraplength=640, justify="left",
                      bg="white", fg=VERDE, font=(fuente, 11, "bold")).pack(anchor="w", padx=14)
             bf.pack(anchor="e", padx=14, pady=10)
             ttk.Button(bf, text="OK", width=12, command=top.destroy).pack()
