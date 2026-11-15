@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.26"
+VERSION = "1.27"
 NOMBRE = "Diana"
 
 
@@ -1198,28 +1198,47 @@ class App:
         for x in (db.cfg("gl_cuentas_ventas") or "").split(","):
             c = gl.cuenta_por_codigo(x.strip()) if x.strip() else None
             if c: cv.add(c["id"])
-        def descuadrada(ref, neto):
+        GRUPOS = {"venta": ("ventas", "inventario", "costo"), "nd": ("ventas",), "nc": ("ventas", "inventario", "costo"),
+                  "compra": ("inventario",), "cobro": ("cxc",), "cobro_exceso": ("cxc",), "pago": ("cxp",), "ajuste": ("inventario",)}
+        def grupo(k):
+            if k == "ventas": return cv
+            c = ui_contab.cta_auto(gl, k)
+            return {c} if c else set()
+        def descuadrada(ref, op, montos):
+            """El asiento existe pero no lleva a ventas / inventario / costo / CxC / CxP lo mismo que el documento."""
             jid = gl.asiento_de(ref)
-            if not jid or not cv or ref in ya: return False
-            v = gl.con.execute(f"SELECT COALESCE(SUM(amount),0) FROM gl_lines WHERE jv_id=? AND account_id IN ({','.join('?' * len(cv))})",
-                               (jid, *cv)).fetchone()[0] or 0
-            return abs(round(-v - neto, 2)) >= 0.01
+            if not jid or ref in ya: return False
+            try:
+                esp = ui_contab.lineas_auto(gl, op, montos)
+            except Exception:
+                return False
+            for k in GRUPOS.get(op, ()):
+                g = grupo(k)
+                if not g: continue
+                e = sum(l["amount"] for l in esp if l["account_id"] in g)
+                v = gl.con.execute(f"SELECT COALESCE(SUM(amount),0) FROM gl_lines WHERE jv_id=? AND account_id IN ({','.join('?' * len(g))})",
+                                   (jid, *g)).fetchone()[0] or 0
+                if abs(round(v - e, 2)) >= 0.01: return True
+            return False
+        def revisar(ref, fecha, op, montos):
+            """(incluir, no_cuadra): sin asiento -> se propone; con asiento que no cuadra -> se propone para reemplazarlo."""
+            if ok(ref, fecha): return True, False
+            if d1 <= (fecha or "")[:10] <= d2 and descuadrada(ref, op, montos): return True, True
+            return False, False
+        NOCUADRA = "EL ASIENTO ACTUAL NO CUADRA CON EL DOCUMENTO: al dar OK se reemplaza por este.\n"
         for h in db.q("SELECT * FROM invoices WHERE deleted=0 AND (date BETWEEN ? AND ? OR 'F:'||nro IN (SELECT ref FROM gl_despues)) "
                       "ORDER BY date, nro", (d1, d2)):
             ref = f"F:{h['nro']}"
             ls = lns(db.q("SELECT * FROM lines WHERE nro=? ORDER BY pos", (h["nro"],)))
             dsc = h["discount"] or 0
-            mal = False
-            if not ok(ref, h["date"]):
-                neto = round(sum(l["qty"] * l["price"] for l in ls) - dsc, 2)
-                if not (d1 <= (h["date"] or "")[:10] <= d2 and descuadrada(ref, neto)): continue
-                mal = True
+            mnt = dict(montos_doc(ls, dsc), fiscal=(h["tipo"] or 0) != 0)
+            inc, mal = revisar(ref, h["date"], "venta", mnt)
+            if not inc: continue
             out.append(dict(fecha=h["date"][:10], ref=ref, tipo="Factura", titulo=f"Asiento de la factura {h['nro']}"
                             + ("  (NO CUADRA con la factura)" if mal else ""),
-                            info=("EL ASIENTO ACTUAL NO CUADRA CON LA FACTURA: al dar OK se reemplaza por este.\n" if mal else "")
+                            info=(NOCUADRA if mal else "")
                                  + f"FACTURA con fecha {fd(h['date'])}\n" + info_documento(db, "F", h["nro"], dict(h), ls, dsc, h["tipo"], h["ncf"]),
-                            descr=f"Factura {h['nro']} {h['name'] or ''}".strip(), op="venta",
-                            montos=dict(montos_doc(ls, dsc), fiscal=(h["tipo"] or 0) != 0)))
+                            descr=f"Factura {h['nro']} {h['name'] or ''}".strip(), op="venta", montos=mnt))
         for h in db.q("SELECT * FROM odocs WHERE deleted=0 AND kind IN ('NC','ND','O') AND (date BETWEEN ? AND ? "
                       "OR kind||':'||nro IN (SELECT ref FROM gl_despues)) "
                       "ORDER BY date, nro", (d1, d2)):
@@ -1230,7 +1249,6 @@ class App:
                 fi = db.one("SELECT date FROM invoices WHERE nro=?", (h["factura"],))
                 if fi and (fi[0] or "")[:10] < d1: continue   # nota de una factura anterior al rango
             ref = f"{k}:{h['nro']}"
-            if not ok(ref, h["date"]): continue
             ls = lns(db.q("SELECT * FROM olines WHERE kind=? AND nro=? ORDER BY pos", (k, h["nro"])))
             dsc = h["discount"] or 0
             fiscal = False
@@ -1238,28 +1256,33 @@ class App:
                 t = db.one("SELECT tipo FROM invoices WHERE nro=?", (h["factura"],))
                 fiscal = bool(t and (t[0] or 0) != 0)
             op = {"NC": "nc", "ND": "nd", "G": "conduce", "O": "compra"}[k]
-            out.append(dict(fecha=h["date"][:10], ref=ref, tipo=KIND_NAME[k], titulo=f"Asiento de {KIND_NAME[k].lower()} {h['nro']}",
-                            info=f"{KIND_NAME[k].upper()} con fecha {fd(h['date'])}\n" + info_documento(db, k, h["nro"], dict(h), ls, dsc),
-                            descr=f"{KIND_NAME[k]} {h['nro']} {h['name'] or ''}".strip(), op=op,
-                            montos=dict(montos_doc(ls, dsc), devolucion=h["status"] == "Con devolución", fiscal=fiscal)))
+            mnt = dict(montos_doc(ls, dsc), devolucion=h["status"] == "Con devolución", fiscal=fiscal)
+            inc, mal = revisar(ref, h["date"], op, mnt)
+            if not inc: continue
+            out.append(dict(fecha=h["date"][:10], ref=ref, tipo=KIND_NAME[k], titulo=f"Asiento de {KIND_NAME[k].lower()} {h['nro']}"
+                            + ("  (NO CUADRA)" if mal else ""),
+                            info=(NOCUADRA if mal else "") + f"{KIND_NAME[k].upper()} con fecha {fd(h['date'])}\n" + info_documento(db, k, h["nro"], dict(h), ls, dsc),
+                            descr=f"{KIND_NAME[k]} {h['nro']} {h['name'] or ''}".strip(), op=op, montos=mnt))
         for p in db.q("SELECT p.*, i.name, i.date AS fdate, i.due AS fdue, i.terms AS fterms FROM payments p LEFT JOIN invoices i ON i.nro=p.nro "
                       "WHERE (p.date BETWEEN ? AND ? OR 'PAGO:'||p.id IN (SELECT ref FROM gl_despues)) ORDER BY p.date, p.id", (d1, d2)):
             ref = f"PAGO:{p['id']}"
-            if not ok(ref, p["date"]): continue
+            inc, mal = revisar(ref, p["date"], "cobro", dict(monto=p["amount"] or 0))
+            if not inc: continue
             if (p["fdate"] or "")[:10] < d1 and not a_credito(p["fdate"], p["fdue"], p["fterms"]) and ref not in despues:
                 continue   # cobro de una factura de contado anterior al rango: ya está en el resumen de ese mes
-            out.append(dict(fecha=p["date"][:10], ref=ref, tipo="Cobro", titulo=f"Asiento del cobro de la factura {p['nro']}",
-                            info=f"COBRO con fecha {fd(p['date'])} de la factura {p['nro']} (factura con fecha {fd(p['fdate'])}"
+            out.append(dict(fecha=p["date"][:10], ref=ref, tipo="Cobro", titulo=f"Asiento del cobro de la factura {p['nro']}" + ("  (NO CUADRA)" if mal else ""),
+                            info=(NOCUADRA if mal else "") + f"COBRO con fecha {fd(p['date'])} de la factura {p['nro']} (factura con fecha {fd(p['fdate'])}"
                                  f"{', a crédito' if (p['fdate'] or '')[:10] < d1 else ''})   {p['name'] or ''}\nMonto {m2(p['amount'] or 0)}   Forma: {p['method'] or ''}",
                             descr=f"Cobro factura {p['nro']} {p['name'] or ''}".strip(), op="cobro", montos=dict(monto=p["amount"] or 0)))
         for p in db.q("SELECT p.*, o.name, o.date AS fdate, o.due AS fdue, o.terms AS fterms FROM ap_payments p LEFT JOIN odocs o ON o.kind='O' AND o.nro=p.nro "
                       "WHERE (p.date BETWEEN ? AND ? OR 'APPAGO:'||p.id IN (SELECT ref FROM gl_despues)) ORDER BY p.date, p.id", (d1, d2)):
             ref = f"APPAGO:{p['id']}"
-            if not ok(ref, p["date"]): continue
+            inc, mal = revisar(ref, p["date"], "pago", dict(monto=p["amount"] or 0))
+            if not inc: continue
             if (p["fdate"] or "")[:10] < d1 and not a_credito(p["fdate"], p["fdue"], p["fterms"]) and ref not in despues:
                 continue   # pago de una compra de contado anterior al rango
-            out.append(dict(fecha=p["date"][:10], ref=ref, tipo="Pago a suplidor", titulo=f"Asiento del pago de la compra {p['nro']}",
-                            info=f"PAGO A SUPLIDOR con fecha {fd(p['date'])}, compra {p['nro']} (compra con fecha {fd(p['fdate'])})   {p['name'] or ''}\nMonto {m2(p['amount'] or 0)}   Forma: {p['method'] or ''}",
+            out.append(dict(fecha=p["date"][:10], ref=ref, tipo="Pago a suplidor", titulo=f"Asiento del pago de la compra {p['nro']}" + ("  (NO CUADRA)" if mal else ""),
+                            info=(NOCUADRA if mal else "") + f"PAGO A SUPLIDOR con fecha {fd(p['date'])}, compra {p['nro']} (compra con fecha {fd(p['fdate'])})   {p['name'] or ''}\nMonto {m2(p['amount'] or 0)}   Forma: {p['method'] or ''}",
                             descr=f"Pago compra {p['nro']} {p['name'] or ''}".strip(), op="pago", montos=dict(monto=p["amount"] or 0)))
         hoy_iso = datetime.date.today().isoformat()
         for m in db.q("SELECT s.rowid AS id, s.code, s.qty, s.date, s.cost, p.descr, p.cost AS pcost FROM stock_moves s "
@@ -1267,13 +1290,14 @@ class App:
                       "OR COALESCE(s.date,'')='' OR 'AJ:'||s.rowid IN (SELECT ref FROM gl_despues))", (d1, d2)):
             ref = f"AJ:{m['id']}"
             viejo = not m["date"]   # ajuste viejo sin fecha: se muestra una vez con fecha de hoy
-            if not ok(ref, m["date"] or hoy_iso): continue
             costo = m["cost"] if (m["cost"] or 0) else (m["pcost"] or 0)
             val = round((m["qty"] or 0) * costo, 2)
+            inc, mal = revisar(ref, m["date"] or hoy_iso, "ajuste", dict(monto=val))
+            if not inc: continue
             m = dict(m); m["cost"] = costo; m["date"] = m["date"] or hoy_iso
             if viejo: m["descr"] = (m["descr"] or "") + "  (ajuste viejo sin fecha: si ya está en el diario, márquelo así)"
-            out.append(dict(fecha=m["date"][:10], ref=ref, tipo="Ajuste de inventario", titulo=f"Asiento del ajuste de inventario {m['code']}",
-                            info=f"AJUSTE DE INVENTARIO con fecha {fd(m['date'])}   {m['code']} {m['descr'] or ''}\n"
+            out.append(dict(fecha=m["date"][:10], ref=ref, tipo="Ajuste de inventario", titulo=f"Asiento del ajuste de inventario {m['code']}" + ("  (NO CUADRA)" if mal else ""),
+                            info=(NOCUADRA if mal else "") + f"AJUSTE DE INVENTARIO con fecha {fd(m['date'])}   {m['code']} {m['descr'] or ''}\n"
                                  f"Cantidad {(m['qty'] or 0):+,.2f}   Costo unitario {m2(m['cost'] or 0)}   Valor {m2(val)}",
                             descr=f"Ajuste inventario {m['code']}", op="ajuste", montos=dict(monto=val)))
         out.sort(key=lambda x: (x["fecha"], x["ref"]))
@@ -1313,6 +1337,7 @@ class App:
         for caja, saldo in self.balances_por_pasar():
             ctas = gl.cuentas()
             nom = f"{caja['code']} {caja['name']}"
+            viejo_inc = 0
             if not self.db.cfg(f"gl_viejo_ok_{caja['id']}"):
                 viejo = round(gl.con.execute("SELECT COALESCE(SUM(l.amount),0) FROM gl_lines l JOIN gl_jv j ON j.id=l.jv_id "
                                              "WHERE l.account_id=? AND j.date<?", (caja["id"], d1)).fetchone()[0] or 0, 2)
@@ -1325,34 +1350,49 @@ class App:
                         saldo = round(saldo - viejo, 2)
                     elif r is False:
                         self.db.set_cfg(f"gl_viejo_ok_{caja['id']}", "1"); saldo = round(saldo - viejo, 2)
+                    else:
+                        viejo_inc = viejo
                     if saldo <= 0.005: continue
             destinos = [c for c in ctas if not c["suspended"] and c["id"] != caja["id"] and
                         any(x in norm(c["name"]) for x in ("canopolis", "miguel canahuate"))]
             if not destinos:
                 messagebox.showwarning(nom, f"{nom} tiene {m2(saldo)} por depositar, pero no encontré activas "
                                        "las cuentas Canopolis ni Miguel Canahuate BHD en el catálogo."); continue
-            top = tk.Toplevel(self.root); top.title(f"Balance de {caja['name']}"); top.transient(self.root); top.grab_set()
-            top.resizable(False, False)
-            ttk.Label(top, text=f"{nom} tiene {m2(saldo)} por depositar (desde {dmy(parse_date(gl.arranque()[:10]))}).\n\n"
-                                "¿Desea pasar ese balance a otra cuenta?", justify="left", padding=14).pack(anchor="w")
-            elegido = {"c": None}
-            for c in destinos:
-                ttk.Button(top, text=f"Pasar a {c['code']} {c['name']}", width=50,
-                           command=lambda c=c: (elegido.update(c=c), top.destroy())).pack(padx=14, pady=3)
-            ttk.Button(top, text="No pasar el balance", width=50, command=top.destroy).pack(padx=14, pady=(8, 14))
-            self.root.wait_window(top)
-            c = elegido["c"]
-            if not c: continue
-            pre = [dict(amount=saldo, code=c["code"], sub1=None, sub2=None, sub3=None, name=""),
-                   dict(amount=-saldo, code=caja["code"], sub1=None, sub2=None, sub3=None, name="")]
-            d = ui_contab.AsientoDialog(self.root, gl, modo="guardar", titulo=f"Pasar balance de {caja['name']}",
-                                        info=f"Débito {c['code']} {c['name']}   Crédito {nom}   Monto {m2(saldo)}\n"
-                                             "Revise el asiento y dé OK para grabarlo.",
-                                        descr=f"Traspaso balance {caja['name'].lower()} a {c['name']}", fecha=hoy, prellenar=pre)
-            self.root.wait_window(d)
-            if d.result:
-                self.refresh_all()
-                messagebox.showinfo(nom, f"Se pasó {m2(saldo)} a {c['code']} {c['name']}.")
+            # uno por uno: cada entrada a la caja desde la fecha de arranque (lo que ya salió se descuenta de las más viejas)
+            ent = gl.con.execute("SELECT j.date, j.descr, j.number, l.amount FROM gl_lines l JOIN gl_jv j ON j.id=l.jv_id "
+                                 "WHERE l.account_id=? AND j.date>=? AND l.amount>0 ORDER BY j.date, j.id", (caja["id"], d1)).fetchall()
+            items = []
+            sobra = round(sum(r["amount"] for r in ent) - (saldo - viejo_inc), 2)
+            if viejo_inc > 0.005: items.append((viejo_inc, f"saldo anterior al {dmy(parse_date(d1))}"))
+            for r in ent:
+                v = round(r["amount"], 2)
+                if sobra > 0.005:
+                    q = min(sobra, v); sobra = round(sobra - q, 2); v = round(v - q, 2)
+                if v > 0.005: items.append((v, f"asiento {r['number'] or ''} del {dmy(parse_date(r['date'][:10]))}  {r['descr'] or ''}".strip()))
+            if not items: items = [(saldo, "")]
+            for saldo, quien in items:
+                top = tk.Toplevel(self.root); top.title(f"Balance de {caja['name']}"); top.transient(self.root); top.grab_set()
+                top.resizable(False, False)
+                ttk.Label(top, text=f"{nom} tiene {m2(saldo)} por depositar ({quien}).\n\n"
+                                    "¿Desea pasar ese balance a otra cuenta?", justify="left", padding=14).pack(anchor="w")
+                elegido = {"c": None}
+                for c in destinos:
+                    ttk.Button(top, text=f"Pasar a {c['code']} {c['name']}", width=50,
+                               command=lambda c=c: (elegido.update(c=c), top.destroy())).pack(padx=14, pady=3)
+                ttk.Button(top, text="No pasar el balance", width=50, command=top.destroy).pack(padx=14, pady=(8, 14))
+                self.root.wait_window(top)
+                c = elegido["c"]
+                if not c: continue
+                pre = [dict(amount=saldo, code=c["code"], sub1=None, sub2=None, sub3=None, name=""),
+                       dict(amount=-saldo, code=caja["code"], sub1=None, sub2=None, sub3=None, name="")]
+                d = ui_contab.AsientoDialog(self.root, gl, modo="guardar", titulo=f"Pasar balance de {caja['name']}",
+                                            info=f"Débito {c['code']} {c['name']}   Crédito {nom}   Monto {m2(saldo)}\n"
+                                                 "Revise el asiento y dé OK para grabarlo.",
+                                            descr=f"Traspaso balance {caja['name'].lower()} a {c['name']} ({quien})", fecha=hoy, prellenar=pre)
+                self.root.wait_window(d)
+                if d.result:
+                    self.refresh_all()
+                    messagebox.showinfo(nom, f"Se pasó {m2(saldo)} a {c['code']} {c['name']}.")
 
     def cuadrar_valores(self, solo_revisar=False):
         """Cuadrar valores Fact & Drio. Gral: compara Ventas, Inventario, CxC y CxP de Facturación (lo que manda)
