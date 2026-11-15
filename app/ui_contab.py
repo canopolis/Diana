@@ -1125,7 +1125,7 @@ def lineas_auto(gl, op, m):
     return L
 
 
-def asiento_automatico(parent, gl, ref, descr, fecha, op, montos, titulo="Asiento", info="", ya_en_diario=False):
+def asiento_automatico(parent, gl, ref, descr, fecha, op, montos, titulo="Asiento", info="", ya_en_diario=False, extra=()):
     """Asiento sin ventana. Devuelve (h, lineas, jv_id), False si no lleva asiento, None si se cancela."""
     jv_id = gl.asiento_de(ref)
     if not gl.arranque() or (not jv_id and not gl.contabiliza(fecha)):
@@ -1138,6 +1138,13 @@ def asiento_automatico(parent, gl, ref, descr, fecha, op, montos, titulo="Asient
         if not d.ok_:
             return None
     lineas = lineas_auto(gl, op, montos)
+    for o2, m2_ in extra:   # otros documentos de la misma operación y día: van en la misma ventana
+        for k2 in NECESITA[o2]:
+            if not cta_auto(gl, k2):
+                d2 = CuentasAutoDialog(parent, gl, [k2], "Esto se pregunta una sola vez.")
+                parent.wait_window(d2)
+                if not d2.ok_: return None
+        lineas += lineas_auto(gl, o2, m2_)
     if not lineas:
         if jv_id:   # el documento quedo en cero: se quita su asiento
             gl.borrar_asiento(jv_id)

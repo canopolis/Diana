@@ -1,5 +1,6 @@
 """Facturacion Canopolis - reemplazo de Monica 8.5 (primera entrega)."""
 import os, sys, datetime, traceback, subprocess
+import json
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
@@ -10,7 +11,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.33"
+VERSION = "1.34"
 NOMBRE = "Diana"
 
 
@@ -1217,8 +1218,13 @@ class App:
         ya = {r[0] for r in gl.con.execute("SELECT ref FROM gl_ya_en_diario")}
         gl.con.execute("CREATE TABLE IF NOT EXISTS gl_despues(ref TEXT PRIMARY KEY, fecha TEXT)")
         despues = {r[0] for r in gl.con.execute("SELECT ref FROM gl_despues")}   # 'Hacer después': siempre se proponen
+        gl.con.execute("CREATE TABLE IF NOT EXISTS gl_agrupado(ref TEXT PRIMARY KEY, principal TEXT, op TEXT, montos TEXT)")
+        agr = {r[0]: r[1] for r in gl.con.execute("SELECT ref, principal FROM gl_agrupado")}
+        def tiene(ref):
+            """Tiene asiento propio, o va dentro del asiento de otro documento de la misma operación y día."""
+            return bool(gl.asiento_de(ref) or (ref in agr and gl.asiento_de(agr[ref])))
         def ok(ref, fecha):
-            return (ref in despues or d1 <= (fecha or "")[:10] <= d2) and ref not in ya and not gl.asiento_de(ref)
+            return (ref in despues or d1 <= (fecha or "")[:10] <= d2) and ref not in ya and not tiene(ref)
         def fd(s):
             return dmy(parse_date(s[:10])) if s else ""
         def a_credito(fecha, vence, terms):
@@ -1244,6 +1250,8 @@ class App:
             if not jid or ref in ya: return False
             try:
                 esp = ui_contab.lineas_auto(gl, op, montos)
+                for o2, m2j in gl.con.execute("SELECT op, montos FROM gl_agrupado WHERE principal=?", (ref,)).fetchall():
+                    esp += ui_contab.lineas_auto(gl, o2, json.loads(m2j))
             except Exception:
                 return False
             for k in GRUPOS.get(op, ()):
@@ -1272,7 +1280,7 @@ class App:
                             + ("  (NO CUADRA con la factura)" if mal else ""),
                             info=(NOCUADRA if mal else "")
                                  + f"FACTURA con fecha {fd(h['date'])}\n" + info_documento(db, "F", h["nro"], dict(h), ls, dsc, h["tipo"], h["ncf"]),
-                            descr=nombre_asiento("F", h['nro'], h['name']), op="venta", montos=mnt))
+                            descr=nombre_asiento("F", h['nro'], h['name']), op="venta", montos=mnt, raiz=ref))
         for h in db.q("SELECT * FROM odocs WHERE deleted=0 AND kind IN ('NC','ND','O') AND (date BETWEEN ? AND ? "
                       "OR kind||':'||nro IN (SELECT ref FROM gl_despues)) "
                       "ORDER BY date, nro", (d1, d2)):
@@ -1296,7 +1304,8 @@ class App:
             out.append(dict(fecha=h["date"][:10], ref=ref, tipo=KIND_NAME[k], titulo=f"Asiento de {KIND_NAME[k].lower()} {h['nro']}"
                             + ("  (NO CUADRA)" if mal else ""),
                             info=(NOCUADRA if mal else "") + f"{KIND_NAME[k].upper()} con fecha {fd(h['date'])}\n" + info_documento(db, k, h["nro"], dict(h), ls, dsc),
-                            descr=nombre_asiento(k, h['nro'], h['name']), op=op, montos=mnt))
+                            descr=nombre_asiento(k, h['nro'], h['name']), op=op, montos=mnt,
+                            raiz=f"F:{h['factura']}" if k in ("NC", "ND") and h["factura"] else ref))
         for p in db.q("SELECT p.*, i.name, i.date AS fdate, i.due AS fdue, i.terms AS fterms FROM payments p LEFT JOIN invoices i ON i.nro=p.nro "
                       "WHERE (p.date BETWEEN ? AND ? OR 'PAGO:'||p.id IN (SELECT ref FROM gl_despues)) ORDER BY p.date, p.id", (d1, d2)):
             ref = f"PAGO:{p['id']}"
@@ -1307,7 +1316,7 @@ class App:
             out.append(dict(fecha=p["date"][:10], ref=ref, tipo="Cobro", titulo=f"Asiento del cobro de la factura {p['nro']}" + ("  (NO CUADRA)" if mal else ""),
                             info=(NOCUADRA if mal else "") + f"COBRO con fecha {fd(p['date'])} de la factura {p['nro']} (factura con fecha {fd(p['fdate'])}"
                                  f"{', a crédito' if (p['fdate'] or '')[:10] < d1 else ''})   {p['name'] or ''}\nMonto {m2(p['amount'] or 0)}   Forma: {p['method'] or ''}",
-                            descr=nombre_asiento("PAGO", p['nro'], p['name']), op="cobro", montos=dict(monto=p["amount"] or 0)))
+                            descr=nombre_asiento("PAGO", p['nro'], p['name']), op="cobro", montos=dict(monto=p["amount"] or 0), raiz=f"F:{p['nro']}"))
         for p in db.q("SELECT p.*, o.name, o.date AS fdate, o.due AS fdue, o.terms AS fterms FROM ap_payments p LEFT JOIN odocs o ON o.kind='O' AND o.nro=p.nro "
                       "WHERE (p.date BETWEEN ? AND ? OR 'APPAGO:'||p.id IN (SELECT ref FROM gl_despues)) ORDER BY p.date, p.id", (d1, d2)):
             ref = f"APPAGO:{p['id']}"
@@ -1317,7 +1326,7 @@ class App:
                 continue   # pago de una compra de contado anterior al rango
             out.append(dict(fecha=p["date"][:10], ref=ref, tipo="Pago a suplidor", titulo=f"Asiento del pago de la compra {p['nro']}" + ("  (NO CUADRA)" if mal else ""),
                             info=(NOCUADRA if mal else "") + f"PAGO A SUPLIDOR con fecha {fd(p['date'])}, compra {p['nro']} (compra con fecha {fd(p['fdate'])})   {p['name'] or ''}\nMonto {m2(p['amount'] or 0)}   Forma: {p['method'] or ''}",
-                            descr=nombre_asiento("APPAGO", p['nro'], p['name']), op="pago", montos=dict(monto=p["amount"] or 0)))
+                            descr=nombre_asiento("APPAGO", p['nro'], p['name']), op="pago", montos=dict(monto=p["amount"] or 0), raiz=f"O:{p['nro']}"))
         hoy_iso = datetime.date.today().isoformat()
         for m in db.q("SELECT s.rowid AS id, s.code, s.qty, s.date, s.cost, p.descr, p.cost AS pcost FROM stock_moves s "
                       "LEFT JOIN products p ON p.code=s.code WHERE s.kind='A' AND (s.date BETWEEN ? AND ? "
@@ -1333,7 +1342,7 @@ class App:
             out.append(dict(fecha=m["date"][:10], ref=ref, tipo="Ajuste de inventario", titulo=f"Asiento del ajuste de inventario {m['code']}" + ("  (NO CUADRA)" if mal else ""),
                             info=(NOCUADRA if mal else "") + f"AJUSTE DE INVENTARIO con fecha {fd(m['date'])}   {m['code']} {m['descr'] or ''}\n"
                                  f"Cantidad {(m['qty'] or 0):+,.2f}   Costo unitario {m2(m['cost'] or 0)}   Valor {m2(val)}",
-                            descr=f"Ajuste de inventario {fd(m['date'])} {m['code']}", op="ajuste", montos=dict(monto=val)))
+                            descr=f"Ajuste de inventario {fd(m['date'])} {m['code']}", op="ajuste", montos=dict(monto=val), raiz=ref))
         out.sort(key=lambda x: (x["fecha"], x["ref"]))
         return out
 
@@ -1676,26 +1685,56 @@ class App:
                                    "Si ya lo registró a mano en el diario, pulse 'Ya está en el diario' y no se vuelve a pedir.\n"
                                    "Si cierra la ventana sin OK, ese documento se salta y queda pendiente.\n\n¿Empezar?"):
             return
+        # misma operación y mismo día (factura + su cobro, nota de esa factura; compra + su pago): una sola ventana
+        grupos, orden = {}, []
+        for p in pend:
+            k = (p.get("raiz") or p["ref"], p["fecha"])
+            if k not in grupos: grupos[k] = []; orden.append(k)
+            grupos[k].append(p)
+        pend = []
+        for k in orden:
+            g = grupos[k]
+            g.sort(key=lambda x: 0 if x["ref"] == k[0] else 1)   # primero el documento principal (factura / compra)
+            if len(g) == 1:
+                pend.append(g[0]); continue
+            p0 = dict(g[0]); p0["miembros"] = g[1:]
+            p0["descr"] = " + ".join(x["descr"] for x in g)
+            p0["titulo"] = " + ".join(x["titulo"] for x in g)
+            p0["info"] = "\n\n".join(x["info"] for x in g)
+            pend.append(p0)
         hechos = saltados = marcados = 0
         orig = self.gl.contabiliza
         self.gl.contabiliza = lambda fecha: True   # aqui se contabiliza aunque sea antes de la fecha de arranque
         try:
             for i, p in enumerate(pend, 1):
+                mb = p.get("miembros") or []
                 r = ui_contab.asiento_automatico(self.root, self.gl, p["ref"], p["descr"],
                                                  datetime.date.fromisoformat(p["fecha"]), p["op"], p["montos"],
-                                                 f"{p['titulo']}   ({i} de {len(pend)})", p["info"], ya_en_diario=True)
-                if r == "DESPUES":
+                                                 f"{p['titulo']}   ({i} de {len(pend)})", p["info"], ya_en_diario=True,
+                                                 extra=[(x["op"], x["montos"]) for x in mb])
+                refs = [p["ref"]] + [x["ref"] for x in mb]
+                if r == "DESPUES":   # queda pendiente con su * (todos los documentos de esa operación y día)
+                    for rf in refs:
+                        self.gl.con.execute("INSERT OR IGNORE INTO gl_despues(ref, fecha) VALUES(?,?)",
+                                            (rf, datetime.date.today().isoformat()))
+                    self.gl.con.commit()
                     saltados += 1
                     continue
                 if r == "YA":
-                    self.gl.con.execute("INSERT OR REPLACE INTO gl_ya_en_diario(ref, fecha) VALUES(?,?)",
-                                        (p["ref"], datetime.date.today().isoformat()))
-                    self.gl.con.execute("DELETE FROM gl_despues WHERE ref=?", (p["ref"],))   # no se recuerda: se quita el *
+                    for rf in refs:
+                        self.gl.con.execute("INSERT OR REPLACE INTO gl_ya_en_diario(ref, fecha) VALUES(?,?)",
+                                            (rf, datetime.date.today().isoformat()))
+                        self.gl.con.execute("DELETE FROM gl_despues WHERE ref=?", (rf,))   # no se recuerda: se quita el *
                     self.gl.con.commit(); marcados += 1
                     continue
                 if r:
                     try:
                         self.gl_grabar(self.root, r); hechos += 1
+                        for x in mb:   # los demás documentos del mismo día van dentro de este asiento
+                            self.gl.con.execute("INSERT OR REPLACE INTO gl_agrupado(ref, principal, op, montos) VALUES(?,?,?,?)",
+                                                (x["ref"], p["ref"], x["op"], json.dumps(x["montos"])))
+                            self.gl.con.execute("DELETE FROM gl_despues WHERE ref=?", (x["ref"],))
+                        self.gl.con.commit()
                     except Exception as e:
                         messagebox.showerror("Asientos pendientes", f"No se pudo grabar el asiento de {p['descr']}:\n{e}")
                         saltados += 1
