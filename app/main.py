@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.31"
+VERSION = "1.32"
 NOMBRE = "Diana"
 
 
@@ -1299,7 +1299,7 @@ class App:
             out.append(dict(fecha=m["date"][:10], ref=ref, tipo="Ajuste de inventario", titulo=f"Asiento del ajuste de inventario {m['code']}" + ("  (NO CUADRA)" if mal else ""),
                             info=(NOCUADRA if mal else "") + f"AJUSTE DE INVENTARIO con fecha {fd(m['date'])}   {m['code']} {m['descr'] or ''}\n"
                                  f"Cantidad {(m['qty'] or 0):+,.2f}   Costo unitario {m2(m['cost'] or 0)}   Valor {m2(val)}",
-                            descr=f"Ajuste inventario {m['code']}", op="ajuste", montos=dict(monto=val)))
+                            descr=f"Ajuste de inventario {fd(m['date'])} {m['code']}", op="ajuste", montos=dict(monto=val)))
         out.sort(key=lambda x: (x["fecha"], x["ref"]))
         return out
 
@@ -1363,14 +1363,18 @@ class App:
                                  "WHERE l.account_id=? AND j.date>=? AND l.amount>0 ORDER BY j.date, j.id", (caja["id"], d1)).fetchall()
             items = []
             sobra = round(sum(r["amount"] for r in ent) - (saldo - viejo_inc), 2)
-            if viejo_inc > 0.005: items.append((viejo_inc, f"saldo anterior al {dmy(parse_date(d1))}"))
+            if viejo_inc > 0.005: items.append((viejo_inc, f"saldo anterior al {dmy(parse_date(d1))}", "Depósito saldo anterior"))
             for r in ent:
                 v = round(r["amount"], 2)
                 if sobra > 0.005:
                     q = min(sobra, v); sobra = round(sobra - q, 2); v = round(v - q, 2)
-                if v > 0.005: items.append((v, f"asiento {r['number'] or ''} del {dmy(parse_date(r['date'][:10]))}  {r['descr'] or ''}".strip()))
-            if not items: items = [(saldo, "")]
-            for saldo, quien in items:
+                if v > 0.005:
+                    import re
+                    mm = re.match(r"\s*cobro factura\s+\S+\s+(.*)", r["descr"] or "", re.I)
+                    simple = f"Depósito cobro venta a {mm.group(1).strip()}" if mm and mm.group(1).strip() else f"Depósito {(r['descr'] or '').strip()}".strip()
+                    items.append((v, f"asiento {r['number'] or ''} del {dmy(parse_date(r['date'][:10]))}  {r['descr'] or ''}".strip(), simple))
+            if not items: items = [(saldo, "", f"Depósito {caja['name'].lower()}")]
+            for saldo, quien, simple in items:
                 top = tk.Toplevel(self.root); top.title(f"Balance de {caja['name']}"); top.transient(self.root); top.grab_set()
                 top.resizable(False, False)
                 ttk.Label(top, text=f"{nom} tiene {m2(saldo)} por depositar ({quien}).\n\n"
@@ -1388,7 +1392,7 @@ class App:
                 d = ui_contab.AsientoDialog(self.root, gl, modo="guardar", titulo=f"Pasar balance de {caja['name']}",
                                             info=f"Débito {c['code']} {c['name']}   Crédito {nom}   Monto {m2(saldo)}\n"
                                                  "Revise el asiento y dé OK para grabarlo.",
-                                            descr=f"Traspaso balance {caja['name'].lower()} a {c['name']} ({quien})", fecha=hoy, prellenar=pre,
+                                            descr=simple, fecha=hoy, prellenar=pre,
                                             hacer_despues=True, texto_despues="Procesar después")
                 self.root.wait_window(d)
                 if d.result and d.result != "DESPUES":
@@ -1495,7 +1499,7 @@ class App:
                                           info=f"{n}\nFacturación {m2(f)}   Diario {m2(d)}   Ajuste a {c['code']} {c['name']}: "
                                                f"{m2(abs(dif))} {'débito' if dif > 0 else 'crédito'}\n"
                                                "Escriba o busque (F2) la contrapartida en la segunda línea. OK = aprobar, Cancelar = rechazar.",
-                                          descr=f"Ajuste {n.split(' (')[0].lower()} para cuadrar con Facturación", fecha=hoy, prellenar=pre,
+                                          descr=f"Ajuste de {n.split(' (')[0].lower()} {dmy(hoy)}", fecha=hoy, prellenar=pre,
                                           no_recordar=True, hacer_despues=True)
             self.root.wait_window(dlg)
             if dlg.result == "DESPUES":
