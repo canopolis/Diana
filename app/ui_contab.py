@@ -56,7 +56,7 @@ class AsientoDialog(tk.Toplevel):
     Facturación guarde el documento y el asiento juntos."""
 
     def __init__(self, parent, gl, jv_id=None, modo="guardar", titulo="Asiento de diario",
-                 info="", descr="", fecha=None, ref=None, source="GL JV", copiar_de=None, nuevo_cb=None, prellenar=None, ya_en_diario=False, no_recordar=False, hacer_despues=False):
+                 info="", descr="", fecha=None, ref=None, source="GL JV", copiar_de=None, nuevo_cb=None, prellenar=None, ya_en_diario=False, no_recordar=False, hacer_despues=False, texto_despues="Hacer después"):
         super().__init__(parent)
         self.gl = gl; self.jv_id = jv_id; self.modo = modo; self.ref = ref; self.source = source
         self.result = None; self.nuevo_cb = nuevo_cb
@@ -125,7 +125,7 @@ class AsientoDialog(tk.Toplevel):
             ttk.Button(pie, text="OK y Nuevo", command=lambda: self.ok(nuevo=True)).pack(side="right", padx=3)
         ttk.Button(pie, text="OK", command=self.ok).pack(side="right", padx=3)
         if hacer_despues:
-            ttk.Button(pie, text="Hacer después",
+            ttk.Button(pie, text=texto_despues,
                        command=lambda: (setattr(self, "result", "DESPUES"), self.destroy())).pack(side="right", padx=3)
         if no_recordar:
             ttk.Button(pie, text="No volver a recordar este ajuste",
@@ -585,6 +585,19 @@ class DiarioTab:
             if on:
                 btn.config(bg="#d93025" if self._dep_tick else "#ffd54f", fg="white" if self._dep_tick else "black",
                            activebackground="#ffd54f")
+        # el botón de depositar se revisa solo cada 3 segundos (un cobro a tránsito/caja chica lo pone a parpadear)
+        self._dep_n = getattr(self, "_dep_n", 0) + 1
+        if self._dep_n % 5 == 0:
+            try:
+                bal = self.app.balances_por_pasar()
+                if bool(bal) != self._dep_on:
+                    self._dep_on = bool(bal)
+                    self.btn_dep.config(state="normal" if bal else "disabled",
+                                        text="Depositar balance\n" + ("   ".join(f"{c['name']}: {m2(v)}" for c, v in bal)
+                                                                       if bal else "2da caja chica / en tránsito"))
+                    if not bal: self.btn_dep.config(bg=self._dep_bg, fg="black")
+            except Exception:
+                pass
         try:
             self.btn_dep.after(600, self._parpadeo)
         except tk.TclError:

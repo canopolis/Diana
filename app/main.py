@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.27"
+VERSION = "1.28"
 NOMBRE = "Diana"
 
 
@@ -1388,9 +1388,10 @@ class App:
                 d = ui_contab.AsientoDialog(self.root, gl, modo="guardar", titulo=f"Pasar balance de {caja['name']}",
                                             info=f"Débito {c['code']} {c['name']}   Crédito {nom}   Monto {m2(saldo)}\n"
                                                  "Revise el asiento y dé OK para grabarlo.",
-                                            descr=f"Traspaso balance {caja['name'].lower()} a {c['name']} ({quien})", fecha=hoy, prellenar=pre)
+                                            descr=f"Traspaso balance {caja['name'].lower()} a {c['name']} ({quien})", fecha=hoy, prellenar=pre,
+                                            hacer_despues=True, texto_despues="Procesar después")
                 self.root.wait_window(d)
-                if d.result:
+                if d.result and d.result != "DESPUES":
                     self.refresh_all()
                     messagebox.showinfo(nom, f"Se pasó {m2(saldo)} a {c['code']} {c['name']}.")
 
