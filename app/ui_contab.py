@@ -413,11 +413,11 @@ def pedir_asiento_documento(parent, gl, ref, titulo, info, descr, fecha, op=None
 
 def dejar_para_despues(parent, gl, ref, jv_id=None):
     """'Hacer después': el documento se guarda sin asiento y queda pendiente para hacerlo desde el Diario General
-    (botón 'Revisar Facturación y Diario'). Devuelve False (= sin asiento) o None si el usuario se arrepiente."""
+    (botón 'Conciliar Facturación y Diario'). Devuelve False (= sin asiento) o None si el usuario se arrepiente."""
     if jv_id:
         if not messagebox.askyesno("Hacer después", "Este documento ya tenía su asiento en el Diario General.\n\n"
                                    "Para hacerlo después se quita ese asiento del diario (el documento no se toca)\n"
-                                   "y queda pendiente en 'Revisar Facturación y Diario'.\n\n¿Seguir?", parent=parent):
+                                   "y queda pendiente en 'Conciliar Facturación y Diario'.\n\n¿Seguir?", parent=parent):
             return None
         try:
             gl.borrar_asiento(jv_id)
@@ -510,7 +510,7 @@ class DiarioTab:
         self.lbl = ttk.Label(b, text=""); self.lbl.pack(side="right", padx=8)
         # se activa y parpadea solo cuando hay balance en 2da caja chica o en tránsito
         # parpadea si hay asientos pendientes de Facturación o diferencias por cuadrar
-        self.btn_rev = tk.Button(b, text="Revisar Facturación y Diario", command=self.revisar_todo,
+        self.btn_rev = tk.Button(b, text="Conciliar Facturación y Diario", command=self.revisar_todo,
                                  relief="raised", padx=10, pady=4)
         self.btn_rev.pack(side="left", padx=3)
         # parpadea solo si hay balance por depositar (desde la fecha de arranque); si está gris, no hay
@@ -561,7 +561,7 @@ class DiarioTab:
         self.aviso_balances()
 
     def aviso_balances(self):
-        """El botón 'Revisar Facturación y Diario' parpadea si hay algo pendiente de aplicar."""
+        """El botón 'Conciliar Facturación y Diario' parpadea si hay algo pendiente de aplicar."""
         try:
             self._rev_on = bool(self.app.hay_pendientes())
         except Exception:
@@ -644,7 +644,7 @@ class DiarioTab:
         if self._es_documento(j):
             txt = (f"El asiento {h['number'] or ''} {h['descr']} viene de un documento de Facturación.\n\n"
                    "Se borra SOLO el asiento del Diario General. El documento en Facturación no se toca "
-                   "(no se elimina ni cambia nada).\nEse documento volverá a salir en 'Revisar Facturación y Diario'.\n\n"
+                   "(no se elimina ni cambia nada).\nEse documento volverá a salir en 'Conciliar Facturación y Diario'.\n\n"
                    "¿Eliminar el asiento?")
         if messagebox.askyesno("Eliminar", txt, icon="warning"):
             try:

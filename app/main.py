@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.24"
+VERSION = "1.25"
 NOMBRE = "Diana"
 
 
@@ -1502,14 +1502,13 @@ class App:
         res = {"ok": False}
         bf = tk.Frame(top, bg="white")
         if difs:
-            tk.Label(top, text=f"✖ Hay {len(difs)} diferencia(s). Se abre un asiento de ajuste por cada una "
-                               "(OK = aprobar, Cancelar = rechazar).", bg="white", fg=ROJO,
+            tk.Label(top, text=f"✖ Hay {len(difs)} diferencia(s). Al pulsar OK sale el asiento de ajuste de cada una, "
+                               "uno por uno (OK / Cancelar / Hacer después).", bg="white", fg=ROJO,
                      font=(fuente, 11, "bold"), wraplength=640, justify="left").pack(anchor="w", padx=14)
             bf.pack(anchor="e", padx=14, pady=10)
-            ttk.Button(bf, text="Revisar ajustes", width=16,
+            ttk.Button(bf, text="OK", width=12,
                        command=lambda: (res.update(ok=True), top.destroy())).pack(side="left", padx=4)
-            ttk.Button(bf, text="Hacer después", width=14, command=top.destroy).pack(side="left", padx=4)
-            ttk.Button(bf, text="Cerrar", width=12, command=top.destroy).pack(side="left", padx=4)
+            top.protocol("WM_DELETE_WINDOW", lambda: (res.update(ok=True), top.destroy()))
         else:
             tk.Label(top, text="✔ Todo cuadra. No hace falta ajuste." if not omit else "✔ No hay ajustes por revisar.",
                      bg="white", fg=VERDE, font=(fuente, 11, "bold")).pack(anchor="w", padx=14)
@@ -1546,7 +1545,7 @@ class App:
     def revisar_todo(self):
         """Un solo botón: 1) asientos pendientes de Facturación, 2) depósito de 2da caja chica / en tránsito,
         3) cuadre de valores Facturación vs Diario General."""
-        if not self._preguntar_revisar("Revisar Facturación y Diario",
+        if not messagebox.askyesno("Conciliar Facturación y Diario",
                                    "Se hace en orden:\n\n   1. Asientos pendientes de Facturación\n"
                                    "   2. Cuadrar valores Facturación y Diario General\n\n"
                                    "Cada asiento lo aprueba, lo cambia o lo rechaza usted.\n\n¿Empezar?"):
