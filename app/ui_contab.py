@@ -426,6 +426,10 @@ def dejar_para_despues(parent, gl, ref, jv_id=None):
             return None
     gl.con.execute("CREATE TABLE IF NOT EXISTS gl_despues(ref TEXT PRIMARY KEY, fecha TEXT)")
     gl.con.execute("INSERT OR REPLACE INTO gl_despues(ref, fecha) VALUES(?,?)", (ref, datetime.date.today().isoformat()))
+    try:   # el * manda: deja de estar como 'ya está en el diario'
+        gl.con.execute("DELETE FROM gl_ya_en_diario WHERE ref=?", (ref,))
+    except Exception:
+        pass
     gl.con.commit()
     return False
 

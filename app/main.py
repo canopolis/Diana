@@ -11,7 +11,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.35"
+VERSION = "1.36"
 NOMBRE = "Diana"
 
 
@@ -1224,7 +1224,8 @@ class App:
             """Tiene asiento propio, o va dentro del asiento de otro documento de la misma operación y día."""
             return bool(gl.asiento_de(ref) or (ref in agr and gl.asiento_de(agr[ref])))
         def ok(ref, fecha):
-            return (ref in despues or d1 <= (fecha or "")[:10] <= d2) and ref not in ya and not tiene(ref)
+            if ref in despues: return not tiene(ref)   # con *: siempre pendiente hasta que tenga su asiento
+            return d1 <= (fecha or "")[:10] <= d2 and ref not in ya and not tiene(ref)
         def fd(s):
             return dmy(parse_date(s[:10])) if s else ""
         def a_credito(fecha, vence, terms):
@@ -1522,10 +1523,13 @@ class App:
         pmov, npend = {}, 0
         try:
             for p in self.pendientes_contables(d1, d2):
-                if "NO CUADRA" in p["titulo"]: continue
                 npend += 1
                 for l in ui_contab.lineas_auto(gl, p["op"], p["montos"]):
                     pmov[l["account_id"]] = pmov.get(l["account_id"], 0) + l["amount"]
+                jid = gl.asiento_de(p["ref"])
+                if jid:   # asiento que no cuadra: cuenta solo lo que le falta
+                    for l in gl.con.execute("SELECT account_id, amount FROM gl_lines WHERE jv_id=?", (jid,)).fetchall():
+                        pmov[l[0]] = pmov.get(l[0], 0) - (l[1] or 0)
         except Exception:
             pmov, npend = {}, 0
         def pend_de(n, c):
