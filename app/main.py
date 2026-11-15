@@ -10,7 +10,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.25"
+VERSION = "1.26"
 NOMBRE = "Diana"
 
 
@@ -1193,14 +1193,31 @@ class App:
             return bool(vence) and (vence or "")[:10] > (fecha or "")[:10]
         def lns(rows):
             return [dict(qty=r["qty"] or 0, price=r["price"] or 0, cost=r["cost"] or 0, itbis=r["itbis"] or 0) for r in rows]
+        # cuentas de ventas: si el asiento de una factura no lleva a ventas lo mismo que la factura, también queda pendiente
+        cv = {c for c in (ui_contab.cta_auto(gl, "ventas_fiscal"), ui_contab.cta_auto(gl, "ventas_libres")) if c}
+        for x in (db.cfg("gl_cuentas_ventas") or "").split(","):
+            c = gl.cuenta_por_codigo(x.strip()) if x.strip() else None
+            if c: cv.add(c["id"])
+        def descuadrada(ref, neto):
+            jid = gl.asiento_de(ref)
+            if not jid or not cv or ref in ya: return False
+            v = gl.con.execute(f"SELECT COALESCE(SUM(amount),0) FROM gl_lines WHERE jv_id=? AND account_id IN ({','.join('?' * len(cv))})",
+                               (jid, *cv)).fetchone()[0] or 0
+            return abs(round(-v - neto, 2)) >= 0.01
         for h in db.q("SELECT * FROM invoices WHERE deleted=0 AND (date BETWEEN ? AND ? OR 'F:'||nro IN (SELECT ref FROM gl_despues)) "
                       "ORDER BY date, nro", (d1, d2)):
             ref = f"F:{h['nro']}"
-            if not ok(ref, h["date"]): continue
             ls = lns(db.q("SELECT * FROM lines WHERE nro=? ORDER BY pos", (h["nro"],)))
             dsc = h["discount"] or 0
-            out.append(dict(fecha=h["date"][:10], ref=ref, tipo="Factura", titulo=f"Asiento de la factura {h['nro']}",
-                            info=f"FACTURA con fecha {fd(h['date'])}\n" + info_documento(db, "F", h["nro"], dict(h), ls, dsc, h["tipo"], h["ncf"]),
+            mal = False
+            if not ok(ref, h["date"]):
+                neto = round(sum(l["qty"] * l["price"] for l in ls) - dsc, 2)
+                if not (d1 <= (h["date"] or "")[:10] <= d2 and descuadrada(ref, neto)): continue
+                mal = True
+            out.append(dict(fecha=h["date"][:10], ref=ref, tipo="Factura", titulo=f"Asiento de la factura {h['nro']}"
+                            + ("  (NO CUADRA con la factura)" if mal else ""),
+                            info=("EL ASIENTO ACTUAL NO CUADRA CON LA FACTURA: al dar OK se reemplaza por este.\n" if mal else "")
+                                 + f"FACTURA con fecha {fd(h['date'])}\n" + info_documento(db, "F", h["nro"], dict(h), ls, dsc, h["tipo"], h["ncf"]),
                             descr=f"Factura {h['nro']} {h['name'] or ''}".strip(), op="venta",
                             montos=dict(montos_doc(ls, dsc), fiscal=(h["tipo"] or 0) != 0)))
         for h in db.q("SELECT * FROM odocs WHERE deleted=0 AND kind IN ('NC','ND','O') AND (date BETWEEN ? AND ? "
@@ -1545,11 +1562,6 @@ class App:
     def revisar_todo(self):
         """Un solo botón: 1) asientos pendientes de Facturación, 2) depósito de 2da caja chica / en tránsito,
         3) cuadre de valores Facturación vs Diario General."""
-        if not messagebox.askyesno("Conciliar Facturación y Diario",
-                                   "Se hace en orden:\n\n   1. Asientos pendientes de Facturación\n"
-                                   "   2. Cuadrar valores Facturación y Diario General\n\n"
-                                   "Cada asiento lo aprueba, lo cambia o lo rechaza usted.\n\n¿Empezar?"):
-            return
         if self.asientos_conduces():
             self.borrar_asientos_conduces()
         self.contabilizar_pendientes(todos=True)
