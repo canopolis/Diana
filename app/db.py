@@ -318,6 +318,8 @@ class DB:
             self.con.execute("ALTER TABLE invoices ADD COLUMN unpaid INTEGER DEFAULT 0")
         if "ncf" not in cols("odocs"):
             self.con.execute("ALTER TABLE odocs ADD COLUMN ncf TEXT DEFAULT ''")
+        if "active" not in cols("clients"):   # 0 = cliente inactivo (tiene facturas y no se puede eliminar)
+            self.con.execute("ALTER TABLE clients ADD COLUMN active INTEGER DEFAULT 1")
         if "dos_costos" not in cols("odocs"):   # orden de compra con costo en origen + costo local
             self.con.execute("ALTER TABLE odocs ADD COLUMN dos_costos INTEGER DEFAULT 0")
         if "cost_local" not in cols("olines"):
@@ -364,11 +366,12 @@ class DB:
         cols = ["code", "name", "addr1", "addr2", "addr3", "city", "phone", "fax", "rnc",
                 "email", "contact", "terms", "ctype"]
         d = dict(d); d.setdefault("ctype", "C")
-        old = self.one("SELECT origin FROM clients WHERE code=?", (d["code"],))
+        old = self.one("SELECT * FROM clients WHERE code=?", (d["code"],))
         origin = old["origin"] if old else "app"
+        activo = old["active"] if old and "active" in old.keys() and old["active"] is not None else 1
         self.con.execute(
-            f"INSERT OR REPLACE INTO clients({','.join(cols)},origin) VALUES({','.join('?'*len(cols))},?)",
-            [d.get(c, "") for c in cols] + [origin if origin == "app" else "app-mod"])
+            f"INSERT OR REPLACE INTO clients({','.join(cols)},origin,active) VALUES({','.join('?'*len(cols))},?,?)",
+            [d.get(c, "") for c in cols] + [origin if origin == "app" else "app-mod", activo])
         self.con.commit()
 
     def next_client_code(self, prefix="A"):

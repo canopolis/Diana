@@ -11,7 +11,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.38"
+VERSION = "1.39"
 NOMBRE = "Diana"
 
 
@@ -653,7 +653,7 @@ class InvoiceEditor(tk.Toplevel):
     def pick_client(self):
         ct = "S" if self.kind == "O" else "C"
         rows = [(c["code"], c["name"], c["rnc"] or "", c["phone"] or "") for c in
-                self.db.q("SELECT * FROM clients WHERE COALESCE(ctype,'C')=? ORDER BY name", (ct,))]
+                self.db.q("SELECT * FROM clients WHERE COALESCE(ctype,'C')=? AND COALESCE(active,1)=1 ORDER BY name", (ct,))]
         p = Picker(self, "Buscar proveedor" if ct == "S" else "Buscar cliente", ("Código", "Nombre", "RNC", "Teléfono"), rows, [90, 330, 140, 150])
         if p.result:
             self.fill_client(p.result[0])
@@ -1979,7 +1979,7 @@ class App:
         # cliente: por RNC; si no trae RNC (consumidor final), por nombre
         cl = None
         if g["rnc"]:
-            mismos = [c for c in self.db.q("SELECT * FROM clients WHERE COALESCE(ctype,'C')='C' ORDER BY name, code")
+            mismos = [c for c in self.db.q("SELECT * FROM clients WHERE COALESCE(ctype,'C')='C' AND COALESCE(active,1)=1 ORDER BY name, code")
                       if "".join(ch for ch in (c["rnc"] or "") if ch.isdigit()) == g["rnc"]]
             if len(mismos) == 1:
                 cl = mismos[0]
@@ -1999,7 +1999,7 @@ class App:
             nom = g["cliente_nombre"] or "consumidor final"
             if messagebox.askyesno("Facturación rápida", f"La factura es de un cliente independiente ({nom}).\n\n"
                                    "¿Asignar esta factura a otro cliente?"):
-                rows = [(c["code"], c["name"]) for c in self.db.q("SELECT code,name FROM clients WHERE COALESCE(ctype,'C')='C' ORDER BY name")]
+                rows = [(c["code"], c["name"]) for c in self.db.q("SELECT code,name FROM clients WHERE COALESCE(ctype,'C')='C' AND COALESCE(active,1)=1 ORDER BY name")]
                 p = Picker(self.root, "Elija el cliente para esta factura", ("Código", "Cliente"), rows, [120, 560])
                 if not p.result: return
                 cl = self.db.one("SELECT * FROM clients WHERE code=?", (p.result[0],))
@@ -2208,13 +2208,18 @@ class App:
         ttk.Button(top, text="Nuevo cliente", command=lambda: self.edit_client(None)).pack(side="left", padx=6)
         ttk.Button(top, text="Nuevo proveedor", command=lambda: self.edit_client(None, prov=True)).pack(side="left", padx=2)
         ttk.Button(top, text="Editar", command=lambda: self.edit_client(self.tv_c.selection()[0] if self.tv_c.selection() else None, True)).pack(side="left")
+        ttk.Button(top, text="Eliminar", command=self.del_client).pack(side="left", padx=6)
+        self.cinact = tk.BooleanVar(value=False)
+        ttk.Checkbutton(top, text="Ver inactivos", variable=self.cinact, command=self.load_clientes).pack(side="left", padx=6)
         cols = ("Código", "Nombre", "RNC", "Teléfono", "Dirección", "Ciudad", "Condiciones", "Saldo")
         self.tv_c = ttk.Treeview(fr, columns=cols, show="headings")
         for c, w in zip(cols, (70, 280, 120, 150, 250, 120, 90, 100)):
             self.tv_c.heading(c, text=c); self.tv_c.column(c, width=w, anchor="e" if c == "Saldo" else "w")
         self.tv_c.pack(fill="both", expand=True)
         self.tv_c.bind("<Double-1>", lambda e: self.edit_client(self.tv_c.selection()[0] if self.tv_c.selection() else None, True))
-        menu_derecho(self.tv_c, self.root, (("Editar", lambda: self.edit_client(self.tv_c.selection()[0] if self.tv_c.selection() else None, True)),))
+        menu_derecho(self.tv_c, self.root, (("Editar", lambda: self.edit_client(self.tv_c.selection()[0] if self.tv_c.selection() else None, True)),
+                                            ("Eliminar", self.del_client)))
+        self.tv_c.tag_configure("off", foreground="#888")
 
     def load_clientes(self):
         self.tv_c.delete(*self.tv_c.get_children())
@@ -2224,10 +2229,42 @@ class App:
         for r in self.db.q("SELECT nro,client,saldo_base FROM invoices WHERE deleted=0"):
             saldo[r["client"]] = saldo.get(r["client"], 0) + r["saldo_base"] - pays.get(r["nro"], 0)
         ct = "S" if self.cprov.get() else "C"
+        ver_inact = self.cinact.get()
         for c in self.db.q("SELECT * FROM clients WHERE COALESCE(ctype,'C')=? ORDER BY name", (ct,)):
             if s and s not in f"{c['code']} {c['name']} {c['rnc']} {c['phone']}".lower(): continue
-            self.tv_c.insert("", "end", iid=c["code"], values=(c["code"], c["name"], c["rnc"], c["phone"], c["addr1"],
+            inact = (c["active"] if "active" in c.keys() and c["active"] is not None else 1) == 0
+            if inact != ver_inact: continue
+            self.tv_c.insert("", "end", iid=c["code"], tags=("off",) if inact else (), values=(c["code"], c["name"] + ("  (inactivo)" if inact else ""),
+                                                               c["rnc"], c["phone"], c["addr1"],
                                                                c["city"], c["terms"], m2(saldo.get(c["code"], 0))))
+
+    def del_client(self):
+        """Sin facturas ni documentos: se elimina. Con facturas: no se puede eliminar, se ofrece inactivarlo.
+        Si ya está inactivo, se ofrece reactivarlo."""
+        sel = self.tv_c.selection()
+        if not sel:
+            messagebox.showinfo("Clientes", "Seleccione un cliente."); return
+        code = sel[0]
+        c = self.db.one("SELECT * FROM clients WHERE code=?", (code,))
+        if not c: return
+        nom = f"{c['code']} {c['name']}"
+        if "active" in c.keys() and c["active"] == 0:
+            if messagebox.askyesno("Clientes", f"{nom} está inactivo.\n\n¿Reactivarlo?"):
+                self.db.con.execute("UPDATE clients SET active=1 WHERE code=?", (code,)); self.db.con.commit()
+                self.load_clientes()
+            return
+        usa = self.db.one("SELECT COUNT(*) FROM invoices WHERE client=?", (code,))[0] + \
+              self.db.one("SELECT COUNT(*) FROM odocs WHERE client=?", (code,))[0]
+        if usa:
+            if messagebox.askyesno("Clientes", f"{nom} tiene facturas o documentos emitidos ({usa}) y no se puede eliminar.\n\n"
+                                   "¿Inactivarlo? Queda guardado con sus facturas, pero ya no sale para facturarle\n"
+                                   "(se ve con 'Ver inactivos' y se puede reactivar)."):
+                self.db.con.execute("UPDATE clients SET active=0 WHERE code=?", (code,)); self.db.con.commit()
+                self.load_clientes()
+            return
+        if messagebox.askyesno("Clientes", f"{nom} no tiene facturas ni documentos.\n\n¿Eliminarlo? No se puede deshacer.", icon="warning"):
+            self.db.con.execute("DELETE FROM clients WHERE code=?", (code,)); self.db.con.commit()
+            self.load_clientes()
 
     def edit_client(self, code, need=False, prov=False):
         if need and not code:
