@@ -260,9 +260,9 @@ def generar_cotizacion(db, kind, nro, ruta):
             p.t(332, 157 + i * 13.5, fit(h[k], TR, 11, 245), TR, 11)
         p.t(334, 199, "Reg. Tribut.:", TR, 10); p.t(393, 199, h["rnc"], TR, 10)
         p.box(33, 213, 582, 238)
-        p.t(50, 222, "Enviar:", TR, 11); p.t(90, 222, h["ship_via"], TR, 11)
-        p.t(167, 222, "Términos:", TR, 11); p.t(215, 222, h["terms"], TR, 11)
-        p.t(307, 222, "Vendedor:", TR, 11); p.t(357, 222, h["seller"], TR, 11)
+        p.t(42, 222, "Enviar:", TR, 11); p.t(80, 222, fit(h["ship_via"], TR, 11, 62), TR, 11)
+        p.t(148, 222, "Términos:", TR, 11); p.t(196, 222, fit(h["terms"], TR, 11, 142), TR, 11)
+        p.t(345, 222, "Vendedor:", TR, 11); p.t(395, 222, fit(h["seller"], TR, 11, 48), TR, 11)
         p.t(447, 222, "Referencia:", TR, 11); p.t(500, 222, fit(h["ref"], TR, 11, 80), TR, 11)
         p.box(32, 241, 582, 269)
         for x in (113, 314, 375, 473):

@@ -11,7 +11,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.39"
+VERSION = "1.40"
 NOMBRE = "Diana"
 
 
@@ -2393,7 +2393,16 @@ class App:
         p = self.db.one("SELECT descr FROM products WHERE code=?", (code,))
         ok, motivo = self.db.can_delete_product(code)
         if not ok:
-            messagebox.showwarning("Eliminar producto", f"No se puede eliminar {code} - {p['descr']}.\n\n{motivo}"); return
+            act = self.db.one("SELECT active FROM products WHERE code=?", (code,))[0]
+            if not act:
+                messagebox.showinfo("Eliminar producto", f"No se puede eliminar {code} - {p['descr']}.\n\n{motivo}\n"
+                                    "Ya está desactivado."); return
+            if messagebox.askyesno("Eliminar producto", f"No se puede eliminar {code} - {p['descr']}.\n\n{motivo}\n\n"
+                                   "¿Desactivarlo? Queda guardado con su historial, pero ya no sale para vender ni comprar\n"
+                                   "(se ve con 'Ver desactivados' y se puede activar con 'Desactivar / activar')."):
+                self.db.con.execute("UPDATE products SET active=0 WHERE code=?", (code,)); self.db.con.commit()
+                self.load_productos()
+            return
         if messagebox.askyesno("Confirmar", f"¿Eliminar definitivamente el producto\n{code} - {p['descr']}?\n\n"
                                             "Las facturas viejas lo siguen mostrando con su código y descripción."):
             self.db.delete_product(code); self.load_productos()

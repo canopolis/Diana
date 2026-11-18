@@ -476,16 +476,13 @@ class DB:
         self.con.commit()
 
     def can_delete_product(self, code):
-        """Solo se elimina si tiene existencia 0 y no esta en facturas con saldo (vencidas o vigentes).
+        """Solo se elimina si nunca se vendió, compró ni movió (sin facturas, documentos ni movimientos de inventario).
         Devuelve (True, '') o (False, motivo)."""
-        st = self.stock(code)
-        if abs(st) > 1e-9:
-            return False, f"Tiene existencia {st:,.2f}. Debe estar en 0."
-        abiertas = {inv["nro"] for inv, _ in self.open_invoices()}
-        usadas = sorted({r["nro"] for r in self.q("SELECT DISTINCT nro FROM lines WHERE code=?", (code,))} & abiertas)
-        if usadas:
-            lista = ", ".join(str(n) for n in usadas[:10]) + (" ..." if len(usadas) > 10 else "")
-            return False, f"Está en facturas vencidas o vigentes (con saldo): {lista}"
+        n = self.one("SELECT COUNT(*) FROM lines WHERE code=?", (code,))[0] + \
+            self.one("SELECT COUNT(*) FROM olines WHERE code=?", (code,))[0] + \
+            self.one("SELECT COUNT(*) FROM stock_moves WHERE code=?", (code,))[0]
+        if n:
+            return False, "Tiene ventas, compras o movimientos de inventario."
         return True, ""
 
     def delete_product(self, code):
