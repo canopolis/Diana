@@ -8,10 +8,32 @@ from db import calc_itbis, DB, APP_NAME, con_carpeta_app, leer_ubicacion, guarda
 from importer import import_backup
 from contab import Contab
 import ui_contab
+
+
+def _centrar(w):
+    """Deja la ventana en el centro de la pantalla (se usa en todas las ventanas al abrirse)."""
+    try:
+        w.update_idletasks()
+        an, al = w.winfo_width(), w.winfo_height()
+        if an <= 1 or al <= 1:
+            an, al = w.winfo_reqwidth(), w.winfo_reqheight()
+        x = max(0, (w.winfo_screenwidth() - an) // 2)
+        y = max(0, (w.winfo_screenheight() - al) // 2 - 20)
+        w.geometry(f"+{x}+{y}")
+    except Exception:
+        pass
+
+
+_toplevel_init = tk.Toplevel.__init__
+def _toplevel_centrado(self, *a, **k):
+    _toplevel_init(self, *a, **k)
+    self.after(1, lambda: _centrar(self))    # al abrir
+    self.after(60, lambda: _centrar(self))   # otra vez cuando ya tiene su tamaño final
+tk.Toplevel.__init__ = _toplevel_centrado
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.42"
+VERSION = "1.43"
 NOMBRE = "Diana"
 
 
@@ -1149,6 +1171,7 @@ class App:
         self.root.deiconify()
         self.root.title(f"{NOMBRE} {VERSION}  -  Facturación y Contabilidad")
         self.root.geometry("1200x720")
+        _centrar(self.root)
         try:
             base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
             self.root.iconbitmap(default=os.path.join(base, "icono.ico"))
