@@ -11,7 +11,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.40"
+VERSION = "1.41"
 NOMBRE = "Diana"
 
 
@@ -1030,6 +1030,7 @@ class DocTab:
                                           "compra", montos_doc([dict(x) for x in ls2], h2["discount"] or 0))
                 if asiento is None: return
                 self.db.set_odoc("O", n, status=nuevo); self.app.gl_grabar(self.app.root, asiento)
+                self.app.pagadas_directo([n])
             else:
                 if not self.app.gl_anular(f"O:{n}", f"Orden {n} vuelve a pendiente"): return
                 self.db.set_odoc("O", n, status=nuevo)
@@ -1194,6 +1195,11 @@ class App:
                     self.cobradas_directo([int(ref[2:])], parent)
                 except ValueError:
                     pass
+            if ref.startswith("O:"):
+                try:
+                    self.pagadas_directo([int(ref[2:])], parent)   # solo actúa si la orden ya está Recibida
+                except ValueError:
+                    pass
 
     NOTA_DIRECTO = "Cobrada directo en el asiento de la factura"
 
@@ -1242,6 +1248,63 @@ class App:
             pid = db.one("SELECT MAX(id) FROM payments")[0]
             gl.con.execute("INSERT OR REPLACE INTO gl_ya_en_diario(ref, fecha) VALUES(?,?)",
                            (f"PAGO:{pid}", datetime.date.today().isoformat())); gl.con.commit()
+            hechos += 1
+        if hechos: self.refresh_all()
+        return hechos
+
+    NOTA_DIRECTO_C = "Pagada directo en el asiento de la compra"
+
+    def _pago_directo_pendiente(self, n):
+        """Compra recibida cuyo asiento pagó todo o parte directo (banco, tarjeta, línea de crédito: sin pasar por
+        Suplidores por pagar) y que en Facturación sigue como cuenta por pagar: total de la compra menos lo que
+        el asiento acreditó a Suplidores por pagar, menos lo ya registrado así."""
+        gl, db = self.gl, self.db
+        cxp = ui_contab.cta_auto(gl, "cxp")
+        jid = gl.asiento_de(f"O:{n}")
+        if not cxp or not jid: return 0.0
+        o = db.one("SELECT total FROM odocs WHERE kind='O' AND nro=? AND deleted=0 AND status='Recibida'", (n,))
+        if not o: return 0.0
+        a_cxp = -(gl.con.execute("SELECT COALESCE(SUM(amount),0) FROM gl_lines WHERE jv_id=? AND account_id=?",
+                                 (jid, cxp)).fetchone()[0] or 0)
+        ya = db.one("SELECT COALESCE(SUM(amount),0) FROM ap_payments WHERE nro=? AND note=?", (n, self.NOTA_DIRECTO_C))[0] or 0
+        directo = round((o["total"] or 0) - a_cxp - ya, 2)
+        return max(0.0, min(directo, db.ap_saldo(n)))
+
+    def compras_pagadas_directo(self):
+        out = []
+        for r in self.gl.con.execute("SELECT ref FROM gl_jv WHERE ref LIKE 'O:%'").fetchall():
+            try:
+                n = int(r["ref"][2:])
+            except ValueError:
+                continue
+            if self._pago_directo_pendiente(n) > 0.005:
+                out.append(n)
+        return out
+
+    def pagadas_directo(self, nros, parent=None):
+        """Registra en Facturación (SIN otro asiento) lo que el asiento de la compra ya pagó directo, para que
+        deje de salir en Cuentas por pagar. Pregunta una vez por compra."""
+        gl, db = self.gl, self.db
+        gl.con.execute("CREATE TABLE IF NOT EXISTS gl_ya_en_diario(ref TEXT PRIMARY KEY, fecha TEXT)")
+        hechos = 0
+        for n in nros:
+            monto = self._pago_directo_pendiente(n)
+            if monto <= 0.005: continue
+            o = db.one("SELECT date, name, total FROM odocs WHERE kind='O' AND nro=?", (n,))
+            saldo = db.ap_saldo(n)
+            tipo = "toda" if abs(monto - saldo) < 0.005 else "una parte"
+            if not messagebox.askyesno("Compra pagada directo",
+                                       f"Compra {n} {o['name'] or ''}   Total {m2(o['total'] or 0)}\n"
+                                       f"Su asiento pagó {tipo} directo (sin Suplidores por pagar): {m2(monto)}.\n"
+                                       f"En Cuentas por pagar todavía sale con saldo: {m2(saldo)}.\n\n"
+                                       f"¿Marcar como pagado {m2(monto)}?\n"
+                                       "(No se crea otro asiento: ese pago ya está en el asiento de la compra.)",
+                                       parent=parent or self.root):
+                continue
+            db.add_ap_payment(n, round(monto, 2), "Directo", parse_date(o["date"]) or datetime.date.today(), self.NOTA_DIRECTO_C)
+            pid = db.one("SELECT MAX(id) FROM ap_payments")[0]
+            gl.con.execute("INSERT OR REPLACE INTO gl_ya_en_diario(ref, fecha) VALUES(?,?)",
+                           (f"APPAGO:{pid}", datetime.date.today().isoformat())); gl.con.commit()
             hechos += 1
         if hechos: self.refresh_all()
         return hechos
@@ -1701,7 +1764,7 @@ class App:
         if not a: return False
         try:
             if self.pendientes_contables(a, datetime.date.today().isoformat()): return True
-            return bool(self.facturas_cobradas_directo()) or bool(self.asientos_conduces())
+            return bool(self.facturas_cobradas_directo()) or bool(self.asientos_conduces()) or bool(self.compras_pagadas_directo())
         except Exception:
             return False
 
@@ -1731,6 +1794,9 @@ class App:
         directas = self.facturas_cobradas_directo()
         if directas:
             self.cobradas_directo(directas)
+        pagadas = self.compras_pagadas_directo()
+        if pagadas:
+            self.pagadas_directo(pagadas)
         self.cuadrar_valores()
         self.refresh_all()
 
