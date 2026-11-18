@@ -318,6 +318,10 @@ class DB:
             self.con.execute("ALTER TABLE invoices ADD COLUMN unpaid INTEGER DEFAULT 0")
         if "ncf" not in cols("odocs"):
             self.con.execute("ALTER TABLE odocs ADD COLUMN ncf TEXT DEFAULT ''")
+        if "dos_costos" not in cols("odocs"):   # orden de compra con costo en origen + costo local
+            self.con.execute("ALTER TABLE odocs ADD COLUMN dos_costos INTEGER DEFAULT 0")
+        if "cost_local" not in cols("olines"):
+            self.con.execute("ALTER TABLE olines ADD COLUMN cost_local REAL DEFAULT 0")
         self.con.commit()
 
     def fix_contact_names(self):
@@ -739,7 +743,7 @@ class DB:
         total = round(subtotal + itbis - (h.get("discount") or 0), 2)
         cols = ["kind", "nro", "date", "due", "client", "name", "dir1", "dir2", "dir3", "ship_to", "sdir1", "sdir2",
                 "sdir3", "rnc", "terms", "ship_via", "seller", "ref", "comment1", "comment2", "comment3", "subtotal",
-                "itbis", "discount", "total", "paid", "status", "factura", "deleted", "origin", "modified", "ncf"]
+                "itbis", "discount", "total", "paid", "status", "factura", "deleted", "origin", "modified", "ncf", "dos_costos"]
         vals = dict(h, kind=kind, subtotal=subtotal, itbis=itbis, total=total, deleted=0,
                     origin=old["origin"] if old else "app",
                     modified=1 if old and old["origin"] == "monica" else 0,
@@ -748,12 +752,14 @@ class DB:
         vals.setdefault("ncf", old["ncf"] if old else "")
         vals.setdefault("status", old["status"] if old else ("Pendiente" if kind == "O" else ""))
         vals.setdefault("discount", 0)
+        vals["dos_costos"] = 1 if h.get("dos_costos") else 0
         self.con.execute(f"INSERT OR REPLACE INTO odocs({','.join(cols)}) VALUES({','.join('?'*len(cols))})",
                          [vals.get(c, "") for c in cols])
         self.con.execute("DELETE FROM olines WHERE kind=? AND nro=?", (kind, nro))
         for i, l in enumerate(lines, 1):
-            self.con.execute("INSERT INTO olines(kind,nro,pos,code,descr,qty,price,cost,itbis) VALUES(?,?,?,?,?,?,?,?,?)",
-                             (kind, nro, i, l["code"], l["descr"], l["qty"], l["price"], l.get("cost", 0), l.get("itbis", 0)))
+            self.con.execute("INSERT INTO olines(kind,nro,pos,code,descr,qty,price,cost,itbis,cost_local) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                             (kind, nro, i, l["code"], l["descr"], l["qty"], l["price"], l.get("cost", 0), l.get("itbis", 0),
+                              (l.get("cost_local") or 0) if h.get("dos_costos") else 0))
         self.con.execute("DELETE FROM ocomments WHERE kind=? AND nro=?", (kind, nro))
         for k, (pos, text) in enumerate(comments):
             self.con.execute("INSERT INTO ocomments VALUES(?,?,?,?,?)", (kind, nro, pos, k, text))

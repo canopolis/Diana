@@ -11,7 +11,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.37"
+VERSION = "1.38"
 NOMBRE = "Diana"
 
 
@@ -427,7 +427,8 @@ def montos_doc(lines, discount=0):
     sub = round(sum(l["qty"] * l["price"] for l in lines), 2)
     itb = calc_itbis(lines, discount or 0)
     return dict(sub=sub, desc=discount or 0, itb=itb, total=round(sub + itb - (discount or 0), 2),
-                costo=round(sum(l["qty"] * (l.get("cost") or 0) for l in lines), 2))
+                costo=round(sum(l["qty"] * (l.get("cost") or 0) for l in lines), 2),
+                local=round(sum(l["qty"] * (l.get("cost_local") or 0) for l in lines), 2))
 
 
 def info_documento(db, kind, nro, h, lines, discount=0, tipo=None, ncf=""):
@@ -462,6 +463,7 @@ class InvoiceEditor(tk.Toplevel):
         self.app = app; self.db = app.db; self.saved = False; self.kind = kind; self.saved_nro = None
         self.ref_invoice = ref_invoice
         self.devol = tk.BooleanVar(value=True)
+        self.dos = tk.BooleanVar(value=False)   # orden de compra: costo en origen + costo local
         kn = KIND_NAME[kind]
         self.title(f"{kn} nueva" if nro is None else f"Editar {kn.lower()} {nro}")
         self.geometry("1050x700"); self.transient(app.root); self.grab_set()
@@ -479,8 +481,11 @@ class InvoiceEditor(tk.Toplevel):
             if kind in ("NC", "ND"):
                 self.ref_invoice = h["factura"]; self.devol.set(h["status"] == "Con devolución")
             self.lines = [dict(code=l["code"], descr=l["descr"], qty=l["qty"], price=l["price"],
-                               cost=l["cost"], itbis=l["itbis"]) for l in ls]
+                               cost=l["cost"], itbis=l["itbis"],
+                               cost_local=(l["cost_local"] or 0) if "cost_local" in l.keys() else 0) for l in ls]
             self.comments = [[c["pos"], c["text"]] for c in cs]
+            if kind == "O" and "dos_costos" in h.keys():
+                self.dos.set(bool(h["dos_costos"]))
         self.build()
         if self.orig:
             self.load_header(self.orig)
@@ -546,8 +551,14 @@ class InvoiceEditor(tk.Toplevel):
         L(9, 0, "Comentario 3"); E(9, 1, "comment3", 45).grid(columnspan=3)
 
         lf = ttk.LabelFrame(self, text="Productos"); lf.pack(fill="both", expand=True, padx=8, pady=4)
+        if self.kind == "O":
+            sw = ttk.Frame(lf); sw.pack(fill="x", pady=(4, 0))
+            self._sw = tk.Label(sw, cursor="hand2", font=("Verdana", 10, "bold"), padx=10, pady=2, relief="flat")
+            self._sw.pack(side="left", padx=4)
+            self._sw.bind("<Button-1>", lambda e: (self.dos.set(not self.dos.get()), self._cambio_dos()))
+            ttk.Label(sw, text="Costo en origen y costo local").pack(side="left")
         add = ttk.Frame(lf); add.pack(fill="x", pady=4)
-        self.pv = {k: tk.StringVar() for k in ("code", "descr", "qty", "price", "venta", "itbis")}
+        self.pv = {k: tk.StringVar() for k in ("code", "descr", "qty", "price", "local", "venta", "itbis")}
         self.pv["itbis"].set("0")
         ttk.Label(add, text="Código").pack(side="left")
         pe = ttk.Entry(add, textvariable=self.pv["code"], width=12); pe.pack(side="left", padx=3)
@@ -557,9 +568,11 @@ class InvoiceEditor(tk.Toplevel):
         ttk.Entry(add, textvariable=self.pv["descr"], width=38).pack(side="left", padx=3)
         ttk.Label(add, text="Cant.").pack(side="left")
         qe = ttk.Entry(add, textvariable=self.pv["qty"], width=8); qe.pack(side="left", padx=3)
-        ttk.Label(add, text="Costo" if self.kind == "O" else "Precio").pack(side="left")
-        pr = ttk.Entry(add, textvariable=self.pv["price"], width=10); pr.pack(side="left", padx=3)
+        self._lbl_costo = ttk.Label(add, text="Costo" if self.kind == "O" else "Precio"); self._lbl_costo.pack(side="left")
+        pr = ttk.Entry(add, textvariable=self.pv["price"], width=10); pr.pack(side="left", padx=3); self._ent_price = pr
         if self.kind == "O":
+            self._lbl_local = ttk.Label(add, text="Costo local")
+            self._ent_local = ttk.Entry(add, textvariable=self.pv["local"], width=10)
             ttk.Label(add, text="Precio venta").pack(side="left")
             ttk.Entry(add, textvariable=self.pv["venta"], width=10).pack(side="left", padx=3)
         ttk.Label(add, text="ITBIS %").pack(side="left")
@@ -568,15 +581,18 @@ class InvoiceEditor(tk.Toplevel):
         pr.bind("<Return>", lambda e: self.add_line()); qe.bind("<Return>", lambda e: self.add_line())
 
         if self.kind == "O":
-            cols = ("#", "Código", "Descripción / comentario", "Cantidad", "Costo", "ITBIS %", "Subtotal", "Precio venta", "Existencia")
-            anchos = (40, 100, 300, 80, 100, 60, 110, 100, 90)
+            cols = ("#", "Código", "Descripción / comentario", "Cantidad", "Costo en origen", "Costo local", "Costo", "ITBIS %",
+                    "Subtotal", "Precio venta", "Existencia")
+            anchos = (40, 100, 260, 70, 100, 90, 90, 60, 100, 90, 80)
         else:
             cols = ("#", "Código", "Descripción / comentario", "Cantidad", "Precio", "ITBIS %", "Subtotal", "Existencia")
             anchos = (40, 100, 340, 80, 100, 60, 110, 90)
         self.tv = ttk.Treeview(lf, columns=cols, show="headings", height=12)
         for c, w in zip(cols, anchos):
-            self.tv.heading(c, text=c); self.tv.column(c, width=w, anchor="e" if c in ("Cantidad", "Precio", "Costo", "ITBIS %", "Subtotal", "Precio venta", "Existencia") else "w")
+            self.tv.heading(c, text=c); self.tv.column(c, width=w, anchor="e" if c in ("Cantidad", "Precio", "Costo", "ITBIS %", "Subtotal", "Precio venta", "Existencia", "Costo en origen", "Costo local") else "w")
         self.tv.pack(fill="both", expand=True)
+        if self.kind == "O":
+            self._cambio_dos(inicio=True)
         self.tv.bind("<Double-1>", lambda e: self.edit_line())
         menu_derecho(self.tv, self, (("Cambiar cantidad/precio", self.edit_line), ("Quitar línea", self.del_line),
                                      ("Agregar comentario a la línea", self.add_comment)))
@@ -589,6 +605,22 @@ class InvoiceEditor(tk.Toplevel):
         b = ttk.Frame(self); b.pack(fill="x", padx=8, pady=8)
         ttk.Button(b, text="Guardar y abrir PDF", command=self.save).pack(side="right", padx=4)
         ttk.Button(b, text="Cancelar", command=self.destroy).pack(side="right", padx=4)
+
+    def _cambio_dos(self, inicio=False):
+        """Toggle: apagado = como siempre (un costo); encendido = costo en origen + costo local por producto."""
+        on = self.dos.get()
+        self._sw.config(text=" ● ENCENDIDO " if on else " ○ APAGADO ", bg="#1b7f3b" if on else "#bdbdbd",
+                        fg="white" if on else "black")
+        self._lbl_costo.config(text="Costo en origen" if on else "Costo")
+        if on:
+            self._lbl_local.pack(side="left", after=self._ent_price)
+            self._ent_local.pack(side="left", padx=3, after=self._lbl_local)
+        else:
+            self._lbl_local.pack_forget(); self._ent_local.pack_forget()
+        todas = list(self.tv["columns"])
+        self.tv["displaycolumns"] = todas if on else [c for c in todas if c not in ("Costo en origen", "Costo local")]
+        if not inicio:
+            self.refresh_lines()
 
     def load_header(self, h):
         h = dict(h)
@@ -673,12 +705,14 @@ class InvoiceEditor(tk.Toplevel):
         try:
             qty = num(self.pv["qty"].get(), 1)
             price = num(self.pv["price"].get(), (p["cost"] or 0) if self.kind == "O" else p["price"])
+            local = num(self.pv["local"].get(), 0) if self.kind == "O" and self.dos.get() else 0
+            price = round(price + local, 2)   # costo del producto = origen + local
             venta = self.pv["venta"].get().strip()
             if venta: num(venta)
         except ValueError:
             messagebox.showwarning("Producto", "Cantidad o precio no válido.", parent=self); return
         self.lines.append(dict(code=code, descr=self.pv["descr"].get() or p["descr"], qty=qty, price=price,
-                               cost=p["cost"], itbis=num(self.pv["itbis"].get(), 0), venta=venta))
+                               cost=p["cost"], itbis=num(self.pv["itbis"].get(), 0), venta=venta, cost_local=local))
         for k in self.pv: self.pv[k].set("")
         self.pv["itbis"].set("0")
         self.refresh_lines()
@@ -686,7 +720,12 @@ class InvoiceEditor(tk.Toplevel):
     def refresh_lines(self):
         self.tv.delete(*self.tv.get_children())
         for i, l in enumerate(self.lines, 1):
-            vals = [i, l["code"], l["descr"], m2(l["qty"]), m2(l["price"]), itbis_txt(l["itbis"]), m2(l["qty"] * l["price"])]
+            if self.kind == "O":
+                loc = l.get("cost_local") or 0
+                vals = [i, l["code"], l["descr"], m2(l["qty"]), m2(l["price"] - loc), m2(loc), m2(l["price"]),
+                        itbis_txt(l["itbis"]), m2(l["qty"] * l["price"])]
+            else:
+                vals = [i, l["code"], l["descr"], m2(l["qty"]), m2(l["price"]), itbis_txt(l["itbis"]), m2(l["qty"] * l["price"])]
             if self.kind == "O":
                 vals.append(m2(num(l["venta"])) if l.get("venta") else "")
             vals.append(m2(self.db.stock(l["code"])))
@@ -713,18 +752,24 @@ class InvoiceEditor(tk.Toplevel):
             if r is not None: self.comments[k][1] = r["text"]
         else:
             i = int(s[1:]) - 1; l = self.lines[i]
+            dos = self.kind == "O" and self.dos.get()
             campos = [("descr", "Descripción", "text"), ("qty", "Cantidad", "num"),
-                      ("price", "Costo" if self.kind == "O" else "Precio", "num")]
+                      ("price", ("Costo en origen" if dos else "Costo") if self.kind == "O" else "Precio", "num")]
+            if dos:
+                campos.append(("local", "Costo local", "num"))
             if self.kind == "O":
                 campos.append(("venta", "Precio venta (vacío = no cambia)", "num"))
             campos.append(("itbis", "ITBIS %", "combo:" + "|".join(ITBIS_OPC)))
             r = form_dialog(self, "Línea", campos,
-                            {"descr": l["descr"], "qty": l["qty"], "price": l["price"], "venta": l.get("venta", ""),
+                            {"descr": l["descr"], "qty": l["qty"], "venta": l.get("venta", ""),
+                             "price": round(l["price"] - ((l.get("cost_local") or 0) if dos else 0), 2), "local": l.get("cost_local") or 0,
                              "itbis": itbis_txt(l["itbis"])})
             if r is not None:
                 try:
                     if r.get("venta"): num(r["venta"])
-                    l.update(descr=r["descr"], qty=num(r["qty"]), price=num(r["price"]), itbis=num(r["itbis"], 0))
+                    loc = num(r.get("local"), 0) if dos else 0
+                    l.update(descr=r["descr"], qty=num(r["qty"]), price=round(num(r["price"]) + loc, 2), itbis=num(r["itbis"], 0))
+                    if dos: l["cost_local"] = loc
                     if self.kind == "O": l["venta"] = r.get("venta", "")
                 except ValueError:
                     messagebox.showwarning("Línea", "Valor no válido.", parent=self)
@@ -765,6 +810,10 @@ class InvoiceEditor(tk.Toplevel):
         if self.kind != "F":
             for k in ("tipo", "ncf"): h.pop(k, None)
             h.update(nro=int(h["nro"]), date=fmt_date(d), due=fmt_date(due), discount=dsc)
+            if self.kind == "O":
+                h["dos_costos"] = 1 if self.dos.get() else 0
+                if not self.dos.get():
+                    for l in self.lines: l["cost_local"] = 0   # apagado: como siempre, un solo costo
             aviso = ""
             if self.kind == "G" and not getattr(self, "ref_invoice", None):
                 existe = self.db.one("SELECT factura FROM odocs WHERE kind='G' AND nro=?", (h["nro"],))
@@ -1233,7 +1282,8 @@ class App:
             if (terms or "").strip().lower() in ("efectivo", "contado", "cash"): return False
             return bool(vence) and (vence or "")[:10] > (fecha or "")[:10]
         def lns(rows):
-            return [dict(qty=r["qty"] or 0, price=r["price"] or 0, cost=r["cost"] or 0, itbis=r["itbis"] or 0) for r in rows]
+            return [dict(qty=r["qty"] or 0, price=r["price"] or 0, cost=r["cost"] or 0, itbis=r["itbis"] or 0,
+                         cost_local=(r["cost_local"] or 0) if "cost_local" in r.keys() else 0) for r in rows]
         # cuentas de ventas: si el asiento de una factura no lleva a ventas lo mismo que la factura, también queda pendiente
         cv = {c for c in (ui_contab.cta_auto(gl, "ventas_fiscal"), ui_contab.cta_auto(gl, "ventas_libres")) if c}
         for x in (db.cfg("gl_cuentas_ventas") or "").split(","):

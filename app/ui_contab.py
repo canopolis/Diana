@@ -1033,6 +1033,7 @@ CUENTAS_AUTO = {
     "itbis_compras": ("ITBIS pagado en compras", "5118"),
     "banco_pagos": ("Banco de donde salen los pagos a suplidores", "1004"),
     "ajuste_inv": ("Diferencias de inventario (ajustes)", "5113"),
+    "costo_local": ("Crédito del costo local de las compras (banco o suplidores por pagar)", "1004"),
 }
 NECESITA = {
     "venta": ["cxc", "ventas_fiscal", "ventas_libres", "itbis_pagar", "costo", "inventario"],
@@ -1117,7 +1118,9 @@ def lineas_auto(gl, op, m):
     elif op == "conduce":
         add("costo", costo); add("inventario", -costo)
     elif op == "compra":
-        add("inventario", neto); add("itbis_compras", itb); add("cxp", -tot)
+        loc = round(m.get("local") or 0, 2)   # costo local (orden con costo en origen + costo local)
+        add("inventario", neto); add("itbis_compras", itb); add("cxp", -(tot - loc))
+        if loc: add("costo_local", -loc)
     elif op == "cobro":
         add("banco_cobros", m["monto"]); add("cxc", -m["monto"])
     elif op == "cobro_exceso":   # pagó más de lo que debía: el exceso queda como saldo a favor del cliente (pasivo)
@@ -1134,7 +1137,8 @@ def asiento_automatico(parent, gl, ref, descr, fecha, op, montos, titulo="Asient
     jv_id = gl.asiento_de(ref)
     if not gl.arranque() or (not jv_id and not gl.contabiliza(fecha)):
         return False
-    faltan = [k for k in NECESITA[op] if not cta_auto(gl, k)]
+    faltan = [k for k in NECESITA[op] + (["costo_local"] if op == "compra" and (montos.get("local") or 0) else [])
+              if not cta_auto(gl, k)]
     if faltan:
         d = CuentasAutoDialog(parent, gl, faltan, "Esto se pregunta una sola vez. Desde ahora el asiento de esta operación\n"
                                                   "se hace solo con estas cuentas (se cambian en Configuración > Contabilidad > Cuentas automáticas).")
