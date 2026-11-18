@@ -33,7 +33,7 @@ tk.Toplevel.__init__ = _toplevel_centrado
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.43"
+VERSION = "1.44"
 NOMBRE = "Diana"
 
 
@@ -979,6 +979,8 @@ class DocTab:
         self.tv.delete(*self.tv.get_children())
         s = self.vs.get().strip().lower(); n = 0; tot = 0
         mrc = marcados_despues(self.db)
+        if self.kind == "O":   # órdenes de compra: verde = recibida, rojo = pendiente
+            self.tv.tag_configure("recibida", foreground="#1b7f3b"); self.tv.tag_configure("pendiente", foreground="#c62828")
         for r in self.db.q("SELECT * FROM odocs WHERE kind=? AND deleted=0 AND date BETWEEN ? AND ? ORDER BY nro DESC",
                            (self.kind, d1, d2)):
             if s and s not in f"{r['nro']} {r['client']} {r['name']}".lower(): continue
@@ -989,7 +991,8 @@ class DocTab:
             else:
                 est = f"Facturada ({r['factura']})" if r["factura"] else ""
             mk = f"{self.kind}:{r['nro']}" in mrc[0] or (self.kind == "O" and r["nro"] in mrc[2])
-            self.tv.insert("", "end", iid=str(r["nro"]), values=(estrella(mk, r["nro"]), dmy(r["date"]), r["client"], r["name"],
+            tg = (("recibida",) if (r["status"] or "") == "Recibida" else ("pendiente",)) if self.kind == "O" else ()
+            self.tv.insert("", "end", iid=str(r["nro"]), tags=tg, values=(estrella(mk, r["nro"]), dmy(r["date"]), r["client"], r["name"],
                                                                  m2(r["total"]), est))
             n += 1; tot += r["total"]
         self.lbl.config(text=f"{n} documentos   Total {m2(tot)}")
