@@ -33,7 +33,7 @@ tk.Toplevel.__init__ = _toplevel_centrado
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.44"
+VERSION = "1.45"
 NOMBRE = "Diana"
 
 
@@ -47,6 +47,13 @@ def nombre_asiento(tipo, nro, nombre=""):
             "NC": f"Nota de crédito {nro}{c}", "ND": f"Nota de débito {nro}{c}", "O": f"Compra {nro}{c}",
             "G": f"Conduce {nro}{c}", "PAGO": f"Cobro de factura {nro}{c}",
             "APPAGO": f"Pago a suplidor, compra {nro}{c}"}.get(tipo, f"{tipo} {nro}{c}")
+
+def quien_compra(nombre, vendedor):
+    """Nombre para el asiento de una compra: si el proveedor es GENERICO y hay vendedor, va el vendedor;
+    en cualquier otro caso va el nombre del proveedor."""
+    nombre = (nombre or "").strip(); vendedor = (vendedor or "").strip()
+    return vendedor if vendedor and nombre.upper().replace("É", "E") == "GENERICO" else nombre
+
 
 def marcados_despues(db):
     """* = documento con 'Hacer después' (el documento o su cobro/pago). Devuelve (refs, facturas_con_cobro, compras_con_pago)."""
@@ -852,7 +859,7 @@ class InvoiceEditor(tk.Toplevel):
                     "SELECT 1 FROM odocs WHERE kind='O' AND nro=? AND status='Recibida'", (h["nro"],))):
                 asiento = self.app.gl_doc(self, f"{self.kind}:{h['nro']}", f"Asiento de {KIND_NAME[self.kind].lower()} {h['nro']}",
                                           info_documento(self.db, self.kind, h["nro"], h, self.lines, dsc),
-                                          nombre_asiento(self.kind, h['nro'], h.get('name', '')), d,
+                                          nombre_asiento(self.kind, h['nro'], quien_compra(h.get('name', ''), h.get('seller', '')) if self.kind == "O" else h.get('name', '')), d,
                                           {"NC": "nc", "ND": "nd", "G": "conduce", "O": "compra"}[self.kind],
                                           dict(montos_doc(self.lines, dsc), devolucion=h.get("status") == "Con devolución",
                                                fiscal=self.kind in ("NC", "ND") and bool(self.db.one(
@@ -1053,7 +1060,7 @@ class DocTab:
                 fecha = parse_date(h2["date"]) or datetime.date.today()   # fecha de la orden (se puede cambiar antes de OK)
                 asiento = self.app.gl_doc(self.app.root, f"O:{n}", f"Asiento de la compra recibida (orden {n})",
                                           info_documento(self.db, "O", n, dict(h2), [dict(x) for x in ls2], h2["discount"] or 0),
-                                          f"Compra recibida orden {n} {h2['name'] or ''}".strip(), fecha,
+                                          f"Compra recibida orden {n} {quien_compra(h2['name'], h2['seller'])}".strip(), fecha,
                                           "compra", montos_doc([dict(x) for x in ls2], h2["discount"] or 0))
                 if asiento is None: return
                 self.db.set_odoc("O", n, status=nuevo); self.app.gl_grabar(self.app.root, asiento)
@@ -1446,7 +1453,7 @@ class App:
             out.append(dict(fecha=h["date"][:10], ref=ref, tipo=KIND_NAME[k], titulo=f"Asiento de {KIND_NAME[k].lower()} {h['nro']}"
                             + ("  (NO CUADRA)" if mal else ""),
                             info=(NOCUADRA if mal else "") + f"{KIND_NAME[k].upper()} con fecha {fd(h['date'])}\n" + info_documento(db, k, h["nro"], dict(h), ls, dsc),
-                            descr=nombre_asiento(k, h['nro'], h['name']), op=op, montos=mnt,
+                            descr=nombre_asiento(k, h['nro'], quien_compra(h['name'], h['seller']) if k == "O" else h['name']), op=op, montos=mnt,
                             raiz=f"F:{h['factura']}" if k in ("NC", "ND") and h["factura"] else ref))
         for p in db.q("SELECT p.*, i.name, i.date AS fdate, i.due AS fdue, i.terms AS fterms FROM payments p LEFT JOIN invoices i ON i.nro=p.nro "
                       "WHERE (p.date BETWEEN ? AND ? OR 'PAGO:'||p.id IN (SELECT ref FROM gl_despues)) ORDER BY p.date, p.id", (d1, d2)):
