@@ -11,7 +11,7 @@ import ui_contab
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.41"
+VERSION = "1.42"
 NOMBRE = "Diana"
 
 
@@ -557,6 +557,7 @@ class InvoiceEditor(tk.Toplevel):
             self._sw.pack(side="left", padx=4)
             self._sw.bind("<Button-1>", lambda e: (self.dos.set(not self.dos.get()), self._cambio_dos()))
             ttk.Label(sw, text="Costo en origen y costo local").pack(side="left")
+            ttk.Button(sw, text="Agregar línea", command=self.add_line).pack(side="left", padx=10)
         add = ttk.Frame(lf); add.pack(fill="x", pady=4)
         self.pv = {k: tk.StringVar() for k in ("code", "descr", "qty", "price", "local", "venta", "itbis")}
         self.pv["itbis"].set("0")
@@ -577,7 +578,8 @@ class InvoiceEditor(tk.Toplevel):
             ttk.Entry(add, textvariable=self.pv["venta"], width=10).pack(side="left", padx=3)
         ttk.Label(add, text="ITBIS %").pack(side="left")
         ttk.Combobox(add, textvariable=self.pv["itbis"], values=ITBIS_OPC, width=4, state="readonly").pack(side="left", padx=3)
-        ttk.Button(add, text="Agregar línea", command=self.add_line).pack(side="left", padx=6)
+        if self.kind != "O":   # en la orden de compra el botón va al lado de "Costo en origen y costo local"
+            ttk.Button(add, text="Agregar línea", command=self.add_line).pack(side="left", padx=6)
         pr.bind("<Return>", lambda e: self.add_line()); qe.bind("<Return>", lambda e: self.add_line())
 
         if self.kind == "O":
