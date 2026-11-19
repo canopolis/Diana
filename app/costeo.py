@@ -221,10 +221,12 @@ class CosteoWin(tk.Toplevel):
             ("qty", "Cantidad", 9, 1, 0), ("bruto", "Precio\nbruto", 12, 0, 0), ("desc", "%\ndescuento", 11, 1, 0),
             ("upi", "Unidades por 1\nde inventario", 14, 1, 1), ("arancel", "%\narancel", 9, 1, 1),
             ("selectivo", "%\nselectivo", 10, 1, 1), ("itbis", "%\nITBIS", 8, 1, 1),
-            ("g", "Costo\ntotal", 12, 0, 0), ("unit", "Costo\nunitario", 11, 0, 0), ("costo", "COSTO\nRD$", 13, 0, 0),
+            ("g", "Costo\ntotal", 12, 0, 0), ("unit", "Costo\nunitario", 11, 0, 0),
+            ("origen", "Costo origen + flete\no shipping RD$", 20, 0, 0), ("local", "Costo local\nRD$", 13, 0, 0),
+            ("costo", "COSTO TOTAL\nRD$", 13, 0, 0), ("itbis_u", "ITBIS pagado\nRD$", 13, 0, 1),
             ("b30", "30%\nbeneficio", 12, 0, 0), ("b35", "35%\nbeneficio", 12, 0, 0), ("b40", "40%\nbeneficio", 12, 0, 0),
-            ("b50", "50%\nbeneficio", 12, 0, 0), ("venta", "Margen\npersonalizado", 14, 0, 0),
-            ("origen", "Costo origen + flete\no shipping RD$", 20, 0, 0), ("local", "Costo local\nRD$", 13, 0, 0)]
+            ("b50", "50%\nbeneficio", 12, 0, 0), ("venta", "Margen\npersonalizado", 14, 0, 0)]
+    COSTOS = ("origen", "local", "costo")       # columnas de costo, sombreadas
     FILAS, SUPS = 18, 6
 
     def __init__(self, app, cid=None):
@@ -353,8 +355,8 @@ class CosteoWin(tk.Toplevel):
             elif entra:
                 x = self._entrada(self.tab, f[k], w, "e")
             else:
-                x = tk.Label(self.tab, textvariable=f[k], font=self.FB if k == "costo" else self.F, anchor="e", width=w, padx=3,
-                             bg=self.CLARO if k == "costo" else "white", fg="#1F6F43" if k in ("b30", "b35", "b40", "b50", "venta") else self.TXT)
+                x = tk.Label(self.tab, textvariable=f[k], font=self.FB if k in self.COSTOS else self.F, anchor="e", width=w, padx=3,
+                             bg=self.CLARO if k in self.COSTOS else "white", fg="#1F6F43" if k in ("b30", "b35", "b40", "b50", "venta") else self.TXT)
             (x.master if k in ("prod", "suplidor") else x).grid(row=r, column=c + 1, sticky="nsew", padx=(0, 1), pady=(0, 1))
             if op:
                 self.extra.append(x)
@@ -471,7 +473,7 @@ class CosteoWin(tk.Toplevel):
                                     arancel=_n(f["arancel"].get()), selectivo=_n(f["selectivo"].get()), itbis=_n(f["itbis"].get())))
             self.orden_filas.append(i)
 
-    CALC = ("bruto", "g", "unit", "costo", "b30", "b35", "b40", "b50", "venta", "origen", "local")
+    CALC = ("bruto", "g", "unit", "costo", "b30", "b35", "b40", "b50", "venta", "origen", "local", "itbis_u")
 
     def _faltan(self):
         """Lista, en palabras, de las casillas que faltan por llenar. Vacía = todo está lleno."""
@@ -531,7 +533,7 @@ class CosteoWin(tk.Toplevel):
                 f = self.filas[i]; c = l["costo"]; ts = l["tasa_s"]
                 for k, v in (("bruto", l["qty"] * l["precio_m"]), ("g", l["g"] / ts), ("unit", l["g"] / ts / l["cant"]), ("costo", c),
                              ("b30", c * 1.42), ("b35", c * 1.53), ("b40", c * 1.66), ("b50", c / 0.5), ("venta", l["venta"]),
-                             ("origen", l["origen"]), ("local", l["local"])):
+                             ("origen", l["origen"]), ("local", l["local"]), ("itbis_u", l["itbis_u"])):
                     f[k].set(m2(v))
             self.tot["t_merc"].set(m2(T["mercancia"])); self.tot["t_flete"].set(m2(T["fletes"])); self.tot["t_ges"].set(m2(T["gestion"]))
             self.tot["t_trib"].set(m2(T["arancel"] + T["selectivo"])); self.tot["t_itbis"].set(m2(T["itbis"])); self.tot["t_total"].set(m2(T["costo"]))
