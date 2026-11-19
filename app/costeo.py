@@ -298,11 +298,13 @@ class CosteoWin(tk.Toplevel):
         self.extra = []   # casillas de las columnas opcionales
         for c, (k, t, w, _, op) in enumerate(self.COLS):
             x = tk.Label(self.tab, text=t, font=self.FB, bg=self.VERDE, fg="white", width=w, height=2, justify="center")
-            x.grid(row=0, column=c, padx=(0, 1), pady=(0, 1), sticky="nsew")
+            x.grid(row=0, column=c + 1, padx=(0, 1), pady=(0, 1), sticky="nsew")
             if op: self.extra.append(x)
+        tk.Label(self.tab, text="Borrar\nfila", font=self.FB, bg=self.VERDE, fg="white", width=6, height=2, justify="center").grid(
+            row=0, column=0, padx=(0, 1), pady=(0, 1), sticky="nsew")
         self.filas = []
         for _ in range(max(self.FILAS, len(self.d["lineas"]))): self._fila()
-        self.lbl = tk.Label(self, text="", font=self.FB, bg="white", fg="#B00020", justify="left", anchor="w"); self.lbl.pack(fill="x", padx=10, pady=6)
+        self.lbl = tk.Label(self, text="", font=self.FB, bg="white", fg="#B00020", justify="left", anchor="w", wraplength=1340); self.lbl.pack(fill="x", padx=10, pady=6)
         self._a_pantalla(); self._opcionales(); self.pintar(avisar=False)
 
     # ----- casillas
@@ -310,6 +312,7 @@ class CosteoWin(tk.Toplevel):
         e = tk.Entry(padre, textvariable=var, width=ancho, font=self.F, bg=self.ENTRA, fg=self.TXT, relief="flat",
                      justify="left" if lado == "w" else "right", highlightthickness=0)
         e.bind("<FocusOut>", lambda ev: self.pintar(avisar=False)); e.bind("<Return>", lambda ev: self.pintar(avisar=False))
+        var.trace_add("write", self._vivo)
         return e
 
     def _buscar(self, txt):
@@ -340,17 +343,42 @@ class CosteoWin(tk.Toplevel):
                     x.bind("<Return>", lambda ev, x=x: self._elegir(x))
                     f["suplidor"].trace_add("write", lambda *a, x=x, v=f["suplidor"]: x.configure(state="normal" if v.get().strip() else "disabled"))
                 x.bind("<<ComboboxSelected>>", lambda ev: self.pintar(avisar=False)); x.bind("<FocusOut>", lambda ev: self.pintar(avisar=False))
+                f[k].trace_add("write", self._vivo)
                 if k == "suplidor": x.configure(state="readonly", postcommand=lambda x=x: x.configure(values=[""] + self._nombres()))
             elif entra:
                 x = self._entrada(self.tab, f[k], w, "e")
             else:
                 x = tk.Label(self.tab, textvariable=f[k], font=self.FB if k == "costo" else self.F, anchor="e", width=w, padx=3,
                              bg=self.CLARO if k == "costo" else "white", fg="#1F6F43" if k in ("b30", "b35", "b40", "b50", "venta") else self.TXT)
-            x.grid(row=r, column=c, sticky="nsew", padx=(0, 1), pady=(0, 1))
+            x.grid(row=r, column=c + 1, sticky="nsew", padx=(0, 1), pady=(0, 1))
             if op:
                 self.extra.append(x)
                 if not self.ver_mas.get(): x.grid_remove()
+        tk.Button(self.tab, text="X", font=self.FB, fg="#B00020", bg="white", relief="flat", cursor="hand2", takefocus=0,
+                  command=lambda f=f: self.borrar_fila(f)).grid(row=r, column=0, sticky="nsew", padx=(0, 1), pady=(0, 1))
         self.filas.append(f)
+
+    ESCRITAS = ("suplidor", "prod", "precio", "qty", "desc", "upi", "arancel", "selectivo", "itbis")
+
+    def borrar_fila(self, f):
+        """Vacía la fila completa (suplidor, producto y lo escrito)."""
+        for k in self.ESCRITAS: f[k].set("")
+        self.pintar(avisar=False)
+
+    def _vivo(self, *a):
+        """Al escribir en cualquier casilla, todo se recalcula solo un momento después."""
+        if getattr(self, "_pint", True): return
+        if getattr(self, "_job", None):
+            try: self.after_cancel(self._job)
+            except Exception: pass
+        self._job = self.after(350, self._vivo_ya)
+
+    def _vivo_ya(self):
+        self._job = None
+        try:
+            if self.winfo_exists(): self.pintar(avisar=False)
+        except tk.TclError:
+            pass
 
     def producto_nuevo(self, descr="", fila=None):
         """Crea en Diana un producto que no existe y lo pone en la fila donde se estaba escribiendo."""
@@ -440,20 +468,59 @@ class CosteoWin(tk.Toplevel):
 
     CALC = ("bruto", "g", "unit", "costo", "b30", "b35", "b40", "b50", "venta", "origen", "local")
 
+    def _faltan(self):
+        """Lista, en palabras, de las casillas que faltan por llenar. Vacía = todo está lleno."""
+        F = []
+        usados = [(n[0].get().strip(), n[1].get() or "US$", (n[3].get() or n[1].get() or "US$") if n[2].get().strip() else None)
+                  for n in self.sups if n[0].get().strip()]
+        nombres = [u[0] for u in usados]
+        mon = {m for u in usados for m in u[1:] if m}
+        try: td, te = _n(self.v["tasa"].get()), _n(self.v["tasa_euro"].get())
+        except ValueError: td = te = 0
+        if "US$" in mon and td <= 0: F.append("Paso 1: Tasa del dólar")
+        if "EURO" in mon and te <= 0: F.append("Paso 1: Tasa del euro")
+        if not nombres: F.append("Paso 2: escriba al menos un suplidor")
+        completas = set(); alguna = False
+        for i, f in enumerate(self.filas):
+            if not any(f[k].get().strip() for k in self.ESCRITAS): continue
+            alguna = True; fa = []
+            sp = f["suplidor"].get().strip()
+            if not sp: fa.append("Suplidor")
+            elif sp not in nombres: fa.append("Suplidor (ese nombre ya no está en el paso 2)")
+            if not f["prod"].get().strip(): fa.append("Producto")
+            if not f["precio"].get().strip(): fa.append("Precio")
+            try: q = _n(f["qty"].get())
+            except ValueError: q = 0
+            if q <= 0: fa.append("Cantidad")
+            if fa: F.append(f"Fila {i + 1}: " + ", ".join(fa))
+            else: completas.add(i)
+        if not alguna: F.append("Paso 3: llene al menos un producto")
+        return F, completas
+
     def pintar(self, avisar=True):
+        self._pint = True
+        try:
+            return self._pintar(avisar)
+        finally:
+            self._pint = False
+
+    def _pintar(self, avisar):
         for f in self.filas:
             for k in self.CALC: f[k].set("")
         for v in self.tot.values(): v.set("")
+        res = None; mal = ""
+        faltan, completas = self._faltan()
         try:
             self._de_pantalla()
-            res = calcular(self.d) if self.d["lineas"] else None
-            aviso = "" if res or self.d["lineas"] else "Llene las casillas amarillas en orden: 1) tasas y gestión, 2) suplidores, 3) productos."
+            pares = [(i, l) for i, l in zip(self.orden_filas, self.d["lineas"]) if i in completas]
+            if pares and not any(x.startswith("Paso") for x in faltan):
+                res = calcular(dict(self.d, lineas=[l for _, l in pares]))
         except ValueError as e:
-            res, aviso = None, str(e)
-            if avisar: messagebox.showwarning("Costeo", aviso, parent=self)
+            mal = str(e)
+            if "could not convert" in mal: mal = "Hay una casilla con un valor que no es un número."
         if res:
             lin, T = res
-            for i, l in zip(self.orden_filas, lin):
+            for (i, _), l in zip(pares, lin):
                 f = self.filas[i]; c = l["costo"]; ts = l["tasa_s"]
                 for k, v in (("bruto", l["qty"] * l["precio_m"]), ("g", l["g"] / ts), ("unit", l["g"] / ts / l["cant"]), ("costo", c),
                              ("b30", c * 1.42), ("b35", c * 1.53), ("b40", c * 1.66), ("b50", c / 0.5), ("venta", l["venta"]),
@@ -461,11 +528,19 @@ class CosteoWin(tk.Toplevel):
                     f[k].set(m2(v))
             self.tot["t_merc"].set(m2(T["mercancia"])); self.tot["t_flete"].set(m2(T["fletes"])); self.tot["t_ges"].set(m2(T["gestion"]))
             self.tot["t_trib"].set(m2(T["arancel"] + T["selectivo"])); self.tot["t_itbis"].set(m2(T["itbis"])); self.tot["t_total"].set(m2(T["costo"]))
-        txt = aviso
-        if self.ordenes: txt += ("   " if txt else "") + f"Órdenes de compra creadas: {self.ordenes}"
-        elif self.cid: txt += ("   " if txt else "") + "Pendiente: todavía no se han creado las órdenes de compra."
-        self.lbl.config(text=txt, fg="#B00020" if aviso and not res and self.d["lineas"] else self.TXT)
-        return res
+        if mal:
+            txt, listo = mal, False
+        elif faltan:
+            txt = "Faltan casillas por llenar:   " + ";   ".join(faltan[:6]) + (f";   y {len(faltan) - 6} más" if len(faltan) > 6 else "")
+            listo = False
+        else:
+            txt, listo = "Todo está lleno. Ya puede guardar, exportar o crear las órdenes de compra.", True
+        if avisar and not listo:
+            messagebox.showwarning("Costeo", mal or "Faltan casillas por llenar:\n\n" + "\n".join(faltan), parent=self)
+        if self.ordenes: txt += f"   Órdenes de compra creadas: {self.ordenes}"
+        elif self.cid: txt += "   Pendiente: todavía no se han creado las órdenes de compra."
+        self.lbl.config(text=txt, fg="#1F6F43" if listo else "#B00020")
+        return res if listo else None
 
     # ----- acciones
     def guardar(self, callar=False):
