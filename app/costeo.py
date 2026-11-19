@@ -171,7 +171,7 @@ def exportar_excel(db, cid, d, carpeta):
     ws["A1"] = f"Costeo de importación {cid}: {d.get('nombre', '')}"; ws["A1"].font = F(bold=True, size=11)
     ws["A2"] = f"Fecha {d['fecha'][8:10]}/{d['fecha'][5:7]}/{d['fecha'][:4]}   Tasa dólar {d.get('tasa') or 0:,.4f}   Tasa euro {d.get('tasa_euro') or 0:,.4f}   Gestión RD$ {m2(d.get('gestion') or 0)}"
     ws["A2"].font = F()
-    cols = ["Suplidor", "Código", "Producto", "Cantidad", "Precio (moneda del suplidor)", "% desc.", "Unid. inventario", "Costo origen + flete o shipping RD$",
+    cols = ["Suplidor", "Código", "Producto", "Cantidad", "Precio (moneda del suplidor)", "% desc.", "Unid. inventario", "Costo en origen en RD$",
             "Costo local RD$", "Costo total RD$", f"Venta {d.get('margen') or 0:g}% margen", "ITBIS RD$", "Total RD$",
             "30% beneficio", "35% beneficio", "40% beneficio", "50% beneficio"]
     for c, t in enumerate(cols, 1):
@@ -222,8 +222,8 @@ class CosteoWin(tk.Toplevel):
             ("upi", "Unidades por 1\nde inventario", 14, 1, 1), ("arancel", "%\narancel", 9, 1, 1),
             ("selectivo", "%\nselectivo", 10, 1, 1), ("itbis", "%\nITBIS", 8, 1, 1),
             ("g", "Costo\ntotal", 12, 0, 0), ("unit", "Costo\nunitario", 11, 0, 0),
-            ("origen", "Costo origen + flete\no shipping RD$", 20, 0, 0), ("local", "Costo local\nRD$", 13, 0, 0),
-            ("costo", "COSTO TOTAL\nRD$", 13, 0, 0), ("itbis_u", "ITBIS pagado en\nimportación", 16, 0, 1),
+            ("origen", "Costo en origen\nen RD$", 16, 0, 0), ("local", "Costo local\nRD$", 13, 0, 0),
+            ("costo", "Costo total\nRD$", 13, 0, 0), ("itbis_u", "ITBIS pagado en\nimportación", 16, 0, 1),
             ("b30", "30%\nbeneficio", 12, 0, 0), ("b35", "35%\nbeneficio", 12, 0, 0), ("b40", "40%\nbeneficio", 12, 0, 0),
             ("b50", "50%\nbeneficio", 12, 0, 0), ("venta", "Margen\npersonalizado", 14, 0, 0)]
     COSTOS = ("origen", "local", "costo")       # columnas de costo, sombreadas
