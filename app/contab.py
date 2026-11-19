@@ -79,6 +79,19 @@ class Contab:
                     self.con.execute("UPDATE gl_lines SET account_id=? WHERE jv_id=? AND account_id=? AND ABS(amount+286705.0)<0.005",
                                      (a_[0], j[0], de[0]))
                     self.db.set_cfg("gl_fix_o367", "1")
+        # Segunda corrección única (a pedido): en ese mismo asiento los cargos locales (59,551.00) se pagaron
+        # con la cuenta 1006 y no con la 1004. Tampoco crea asiento nuevo.
+        if not self.db.cfg("gl_fix_o367_local"):
+            j = self.con.execute("SELECT id FROM gl_jv WHERE number=13650 AND ref='O:367' AND date='2026-11-18'").fetchone()
+            de = self.con.execute("SELECT id FROM gl_accounts WHERE code='1004'").fetchone()
+            a_ = self.con.execute("SELECT id FROM gl_accounts WHERE code='1006'").fetchone()
+            if j and de and a_:
+                n = self.con.execute("SELECT COUNT(*) FROM gl_lines WHERE jv_id=? AND account_id=? AND ABS(amount+59551.0)<0.005",
+                                     (j[0], de[0])).fetchone()[0]
+                if n == 1:
+                    self.con.execute("UPDATE gl_lines SET account_id=? WHERE jv_id=? AND account_id=? AND ABS(amount+59551.0)<0.005",
+                                     (a_[0], j[0], de[0]))
+                    self.db.set_cfg("gl_fix_o367_local", "1")
         self.con.commit()
 
     # ---------- configuracion ----------
