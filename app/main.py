@@ -34,7 +34,7 @@ from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, ge
 import reportes
 import costeo
 
-VERSION = "1.55"
+VERSION = "1.56"
 NOMBRE = "Diana"
 
 
@@ -1590,7 +1590,7 @@ class App:
         def cta(k):
             c = ui_contab.cta_auto(gl, k)
             return gl.cuenta(c) if c else None
-        faltan = [n for k, n in (("cxc", "Cuentas por cobrar"),
+        faltan = [n for k, n in (("cxc", "Cuentas por cobrar"), ("cxp", "Cuentas por pagar a suplidores"),
                                  ("inventario", "Inventario"), ("ventas_fiscal", "Ventas con comprobante"),
                                  ("ventas_libres", "Ventas libres")) if not cta(k)]
         if faltan:
@@ -1616,8 +1616,8 @@ class App:
             vf[(r["tipo"] or 0) != 0] += neto if r["kind"] == "ND" else -neto
         # ---- conceptos: (nombre, cuenta, facturación, diario, signo)  signo 1 = saldo deudor, -1 = acreedor
         filas = [("Cuentas por cobrar (saldo al " + dmy(hoy) + ")", cta("cxc"), cxc_f, round(sal.get(cta("cxc")["id"], 0), 2), 1),
-                 ("Inventario (valor al " + dmy(hoy) + ")", cta("inventario"), inv_f, round(sal.get(cta("inventario")["id"], 0), 2), 1)]
-        # Cuentas por pagar ya no sale en el cuadre (a pedido: no se compara ni se propone ajuste)
+                 ("Inventario (valor al " + dmy(hoy) + ")", cta("inventario"), inv_f, round(sal.get(cta("inventario")["id"], 0), 2), 1),
+                 ("Cuentas por pagar (saldo al " + dmy(hoy) + ")", cta("cxp"), cxp_f, round(-sal.get(cta("cxp")["id"], 0), 2), -1)]
         cf, cl = cta("ventas_fiscal"), cta("ventas_libres")
         per = f"del {dmy(parse_date(d1))} al {dmy(hoy)}"
         # cuentas de ventas que se usan en el diario (se pregunta una vez; se cambia en Configuración > Contabilidad)
