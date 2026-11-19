@@ -184,215 +184,173 @@ def exportar_excel(db, cid, d, carpeta):
 
 
 # ---------------------------------------------------------------- ventanas
-def _form(parent, titulo, campos, valores):
-    """campos: [(clave, etiqueta, opciones|None)]. Devuelve dict de textos o None."""
-    top = tk.Toplevel(parent); top.title(titulo); top.transient(parent); top.grab_set()
-    vs = {}; res = {}
-    for i, (k, lab, ops) in enumerate(campos):
-        ttk.Label(top, text=lab).grid(row=i, column=0, sticky="e", padx=6, pady=3)
-        v = tk.StringVar(value=str(valores.get(k, "") if valores.get(k) is not None else ""))
-        w = ttk.Combobox(top, textvariable=v, values=ops, width=46) if ops is not None else ttk.Entry(top, textvariable=v, width=48)
-        w.grid(row=i, column=1, sticky="w", padx=6, pady=3); vs[k] = v
-    def ok():
-        for k, v in vs.items(): res[k] = v.get().strip()
-        top.destroy()
-    bf = ttk.Frame(top); bf.grid(row=len(campos), column=0, columnspan=2, pady=8)
-    ttk.Button(bf, text="Guardar", command=ok).pack(side="left", padx=6)
-    ttk.Button(bf, text="Cancelar", command=top.destroy).pack(side="left", padx=6)
-    top.wait_window()
-    return res or None
-
-
 class CosteoWin(tk.Toplevel):
-    COLS = [("suplidor", "Suplidor", 110, "w"), ("code", "Código", 80, "w"), ("descr", "Producto", 230, "w"),
-            ("qty", "Cantidad", 70, "e"), ("precio", "Precio", 80, "e"), ("desc", "% desc.", 60, "e"),
-            ("cant", "Unid. inv.", 70, "e"), ("origen", "Costo origen", 100, "e"), ("local", "Costo local", 95, "e"),
-            ("costo", "Costo total", 100, "e"), ("venta", "Venta", 100, "e")]
+    """Pantalla como la hoja de Excel: una tabla donde se escribe directo en las casillas amarillas, el desglose
+    de cargos debajo y, al lado, los fletes por suplidor. Todo se recalcula solo al salir de cada casilla."""
+    VERDE, CLARO, ENTRA, TXT = "#1F4E3D", "#EAF2EC", "#FFF9DB", "#26332C"
+    # (clave, título, ancho, se escribe)
+    COLS = [("prod", "Item #", 30, 1), ("precio", "price", 9, 1), ("qty", "cantidad", 8, 1), ("bruto", "Precio bruto", 11, 0),
+            ("desc", "% descuento", 8, 1), ("g", "Costo Total", 11, 0), ("unit", "Costo unitario", 10, 0),
+            ("costo", "COSTO RD$", 12, 0), ("b30", "30% beneficio", 11, 0), ("b35", "35% beneficio", 11, 0),
+            ("b40", "40% beneficio", 11, 0), ("b50", "50% beneficio", 11, 0), ("venta", "Margen personalizado", 12, 0),
+            ("origen", "Costo origen + shipping RD$", 13, 0), ("local", "Costo local RD$", 12, 0),
+            ("suplidor", "Suplidor", 12, 1), ("upi", "Unid. por 1 de inventario", 9, 1),
+            ("arancel", "% arancel", 7, 1), ("selectivo", "% selectivo", 7, 1), ("itbis", "% ITBIS", 7, 1)]
+    FILAS, SUPS = 18, 6
 
     def __init__(self, app, cid=None):
         super().__init__(app.root)
         self.app, self.db = app, app.db
         preparar(self.db)
-        self.cid = cid
-        self.ordenes = ""
-        self.d = nuevo()
+        self.cid, self.ordenes, self.d = cid, "", nuevo()
         if cid:
             r = self.db.one("SELECT datos, ordenes FROM costeos WHERE id=?", (cid,))
             self.d = json.loads(r["datos"]); self.ordenes = r["ordenes"] or ""
-        self.title("Costeo de importación"); self.geometry("1180x640")
-        top = ttk.Frame(self, padding=8); top.pack(fill="x")
+        self.title("Costeo de importación"); self.geometry("1320x700"); self.configure(bg="white")
+        self.F = ("Verdana", 9); self.FB = ("Verdana", 9, "bold")
+        self.prods = [f"{p['code']} | {p['descr']}" for p in self.db.q("SELECT code, descr FROM products WHERE active=1 ORDER BY descr")]
+        # ----- fila de arriba
+        top = tk.Frame(self, bg="white"); top.pack(fill="x", padx=10, pady=(8, 4))
         self.v = {}
-        for i, (k, lab, w) in enumerate((("nombre", "Nombre", 28), ("fecha", "Fecha (dd/mm/aaaa)", 12), ("tasa", "Tasa RD$", 9),
-                                         ("gestion", "Gestión y cargos locales RD$", 13),
-                                         ("flete_general", "Flete compartido", 10), ("margen", "Margen %", 6))):
-            ttk.Label(top, text=lab).grid(row=0, column=2 * i, sticky="e", padx=(8, 3))
-            self.v[k] = tk.StringVar(); ttk.Entry(top, textvariable=self.v[k], width=w).grid(row=0, column=2 * i + 1, sticky="w")
-        self._a_pantalla()
-        mid = ttk.Frame(self, padding=(8, 0)); mid.pack(fill="both", expand=True)
-        izq = ttk.LabelFrame(mid, text="Suplidores y su flete", padding=4); izq.pack(side="left", fill="y")
-        self.ts = ttk.Treeview(izq, columns=("n", "f", "fr", "p"), show="headings", height=12)
-        for c, t, w in (("n", "Suplidor", 110), ("f", "Flete", 70), ("fr", "Flete RD$", 80), ("p", "Pagado RD$", 90)):
-            self.ts.heading(c, text=t); self.ts.column(c, width=w, anchor="w" if c == "n" else "e")
-        self.ts.pack(fill="y", expand=True)
-        b = ttk.Frame(izq); b.pack(fill="x", pady=3)
-        for t, c in (("Agregar", self.sup_add), ("Editar", self.sup_edit), ("Quitar", self.sup_del)):
-            ttk.Button(b, text=t, command=c).pack(side="left", padx=2)
-        self.ts.bind("<Double-1>", lambda e: self.sup_edit())
-        der = ttk.LabelFrame(mid, text="Productos", padding=4); der.pack(side="left", fill="both", expand=True, padx=(8, 0))
-        self.tl = ttk.Treeview(der, columns=[c[0] for c in self.COLS], show="headings")
-        for k, t, w, a in self.COLS:
-            self.tl.heading(k, text=t); self.tl.column(k, width=w, anchor=a)
-        sb = ttk.Scrollbar(der, orient="vertical", command=self.tl.yview); self.tl.configure(yscrollcommand=sb.set)
-        b = ttk.Frame(der); b.pack(side="bottom", fill="x", pady=3)
-        sb.pack(side="right", fill="y"); self.tl.pack(fill="both", expand=True)
-        for t, c in (("Agregar producto", self.lin_add), ("Editar", self.lin_edit), ("Quitar", self.lin_del)):
-            ttk.Button(b, text=t, command=c).pack(side="left", padx=2)
-        self.tl.bind("<Double-1>", lambda e: self.lin_edit())
-        pie = ttk.Frame(self, padding=8); pie.pack(fill="x")
-        self.lbl = ttk.Label(pie, text="", justify="left"); self.lbl.pack(side="left")
+        for k, lab, w in (("fecha", "FECHA", 11), ("nombre", "NOMBRE", 30), ("margen", "MARGEN %", 6)):
+            tk.Label(top, text=lab, font=self.FB, bg=self.VERDE, fg="white", padx=6).pack(side="left", padx=(0, 0))
+            self.v[k] = tk.StringVar()
+            self._entrada(top, self.v[k], w).pack(side="left", padx=(0, 12))
         for t, c in (("Cerrar", self.destroy), ("Exportar a Excel", self.excel), ("Crear órdenes de compra", self.ordenar),
-                     ("Guardar", self.guardar), ("Calcular", self.pintar)):
-            ttk.Button(pie, text=t, command=c).pack(side="right", padx=3)
-        self.pintar(avisar=False)
+                     ("Guardar", self.guardar), ("Agregar filas", self.mas_filas)):
+            ttk.Button(top, text=t, command=c).pack(side="right", padx=3)
+        # ----- tabla principal (con barras de desplazamiento)
+        marco = tk.Frame(self, bg="white"); marco.pack(fill="both", expand=True, padx=10)
+        self.cv = tk.Canvas(marco, bg="white", highlightthickness=0)
+        sy = ttk.Scrollbar(marco, orient="vertical", command=self.cv.yview); sx = ttk.Scrollbar(marco, orient="horizontal", command=self.cv.xview)
+        self.cv.configure(yscrollcommand=sy.set, xscrollcommand=sx.set)
+        sy.pack(side="right", fill="y"); sx.pack(side="bottom", fill="x"); self.cv.pack(fill="both", expand=True)
+        self.tab = tk.Frame(self.cv, bg="#C9D1CC"); self.cv.create_window((0, 0), window=self.tab, anchor="nw")
+        self.tab.bind("<Configure>", lambda e: self.cv.configure(scrollregion=self.cv.bbox("all")))
+        for c, (k, t, w, _) in enumerate(self.COLS):
+            tk.Label(self.tab, text=t, font=self.FB, bg=self.VERDE, fg="white", width=w, wraplength=w * 8, height=3,
+                     justify="center").grid(row=0, column=c, padx=(0, 1), pady=(0, 1), sticky="nsew")
+        self.filas = []
+        for _ in range(max(self.FILAS, len(self.d["lineas"]))): self._fila()
+        # ----- abajo: desglose de cargos y fletes por suplidor
+        bajo = tk.Frame(self, bg="white"); bajo.pack(fill="x", padx=10, pady=8)
+        dg = tk.Frame(bajo, bg="#C9D1CC"); dg.pack(side="left", anchor="n")
+        tk.Label(dg, text="Desglose de cargos", font=self.FB, bg=self.VERDE, fg="white").grid(row=0, column=0, columnspan=2, sticky="nsew", pady=(0, 1))
+        self.tot = {}
+        for r, (k, lab, entra) in enumerate((("tasa", "Tasa (RD$ por US$)", 1), ("flete_general", "shipping compartido", 1),
+                                             ("gestion", "Gestion RD$", 1), ("t_merc", "subtotal mercancía RD$", 0),
+                                             ("t_flete", "fletes RD$", 0), ("t_trib", "arancel + selectivo RD$", 0),
+                                             ("t_itbis", "ITBIS RD$ (no va al costo)", 0), ("t_total", "total general RD$", 0)), 1):
+            tk.Label(dg, text=lab, font=self.FB, bg=self.CLARO, fg=self.TXT, anchor="w", width=26, padx=4).grid(row=r, column=0, sticky="nsew", padx=(0, 1), pady=(0, 1))
+            if entra:
+                self.v[k] = tk.StringVar(); self._entrada(dg, self.v[k], 14).grid(row=r, column=1, sticky="nsew", pady=(0, 1))
+            else:
+                self.tot[k] = tk.StringVar()
+                tk.Label(dg, textvariable=self.tot[k], font=self.FB if k == "t_total" else self.F, bg=self.CLARO if k == "t_total" else "white",
+                         fg=self.TXT, anchor="e", width=14, padx=4).grid(row=r, column=1, sticky="nsew", pady=(0, 1))
+        fl = tk.Frame(bajo, bg="#C9D1CC"); fl.pack(side="left", anchor="n", padx=24)
+        tk.Label(fl, text="Fletes por suplidor", font=self.FB, bg=self.VERDE, fg="white").grid(row=0, column=0, columnspan=4, sticky="nsew", pady=(0, 1))
+        for c, (t, w) in enumerate((("Suplidor", 16), ("Flete", 11), ("Flete en RD$", 12), ("Mercancía pagada en RD$", 20))):
+            tk.Label(fl, text=t, font=self.FB, bg=self.CLARO, fg=self.TXT, width=w).grid(row=1, column=c, sticky="nsew", padx=(0, 1), pady=(0, 1))
+        self.sups = []
+        for r in range(max(self.SUPS, len(self.d["suplidores"]))):
+            fila = [tk.StringVar() for _ in range(4)]
+            for c, (var, w) in enumerate(zip(fila, (16, 11, 12, 20))):
+                self._entrada(fl, var, w, "w" if c == 0 else "e").grid(row=r + 2, column=c, sticky="nsew", padx=(0, 1), pady=(0, 1))
+            self.sups.append(fila)
+        self.lbl = tk.Label(bajo, text="", font=self.F, bg="white", fg=self.TXT, justify="left", anchor="nw"); self.lbl.pack(side="left", anchor="n")
+        self._a_pantalla(); self.pintar(avisar=False)
 
-    # ----- cabecera
+    # ----- casillas
+    def _entrada(self, padre, var, ancho, lado="w"):
+        e = tk.Entry(padre, textvariable=var, width=ancho, font=self.F, bg=self.ENTRA, fg=self.TXT, relief="flat",
+                     justify="left" if lado == "w" else "right", highlightthickness=0)
+        e.bind("<FocusOut>", lambda ev: self.pintar(avisar=False)); e.bind("<Return>", lambda ev: self.pintar(avisar=False))
+        return e
+
+    def _fila(self):
+        r = len(self.filas) + 1; f = {}
+        for c, (k, t, w, entra) in enumerate(self.COLS):
+            f[k] = tk.StringVar()
+            if k in ("prod", "suplidor"):
+                x = ttk.Combobox(self.tab, textvariable=f[k], width=w, font=self.F, values=self.prods if k == "prod" else [])
+                x.bind("<<ComboboxSelected>>", lambda ev: self.pintar(avisar=False)); x.bind("<FocusOut>", lambda ev: self.pintar(avisar=False))
+                if k == "suplidor": x.configure(postcommand=lambda x=x: x.configure(values=self._nombres()))
+            elif entra:
+                x = self._entrada(self.tab, f[k], w, "e")
+            else:
+                x = tk.Label(self.tab, textvariable=f[k], font=self.FB if k == "costo" else self.F, anchor="e", width=w, padx=3,
+                             bg=self.CLARO if k == "costo" else "white", fg="#1F6F43" if k in ("b30", "b35", "b40", "b50", "venta") else self.TXT)
+            x.grid(row=r, column=c, sticky="nsew", padx=(0, 1), pady=(0, 1))
+        self.filas.append(f)
+
+    def mas_filas(self):
+        for _ in range(5): self._fila()
+
+    def _nombres(self):
+        return [s[0].get().strip() for s in self.sups if s[0].get().strip()]
+
+    # ----- datos <-> pantalla
     def _a_pantalla(self):
-        d = self.d
-        self.v["nombre"].set(d.get("nombre", ""))
+        d = self.d; g = lambda v: f"{v:.12g}" if v else ""
         f = d.get("fecha") or datetime.date.today().isoformat()
-        self.v["fecha"].set(f"{f[8:10]}/{f[5:7]}/{f[:4]}")
-        for k in ("tasa", "gestion", "flete_general", "margen"):
-            self.v[k].set(f"{d.get(k) or 0:g}")
+        self.v["fecha"].set(f"{f[8:10]}/{f[5:7]}/{f[:4]}"); self.v["nombre"].set(d.get("nombre", ""))
+        for k in ("tasa", "gestion", "flete_general", "margen"): self.v[k].set(g(d.get(k)))
+        for fila, s in zip(self.sups, d["suplidores"]):
+            fila[0].set(s["nombre"]); fila[1].set(g(s.get("flete"))); fila[2].set(g(s.get("flete_rd"))); fila[3].set(g(s.get("pagado_rd")))
+        for fila, l in zip(self.filas, d["lineas"]):
+            fila["prod"].set(next((x for x in self.prods if x.split(" | ")[0] == l.get("code")), l.get("descr", "")))
+            for k in ("precio", "qty", "desc", "arancel", "selectivo", "itbis"): fila[k].set(g(l.get(k)))
+            fila["upi"].set(g(l.get("upi")) if (l.get("upi") or 1) != 1 else ""); fila["suplidor"].set(l.get("suplidor", ""))
 
     def _de_pantalla(self):
         d = self.d
         d["nombre"] = self.v["nombre"].get().strip()
         t = self.v["fecha"].get().strip().replace("-", "/").split("/")
-        if len(t) != 3:
-            raise ValueError("La fecha va como dd/mm/aaaa.")
+        if len(t) != 3: raise ValueError("La fecha va como dd/mm/aaaa.")
         d["fecha"] = datetime.date(int(t[2]) if len(t[2]) == 4 else 2000 + int(t[2]), int(t[1]), int(t[0])).isoformat()
-        for k in ("tasa", "gestion", "flete_general", "margen"):
-            d[k] = _n(self.v[k].get())
+        for k in ("tasa", "gestion", "flete_general", "margen"): d[k] = _n(self.v[k].get())
+        d["suplidores"] = [dict(nombre=s[0].get().strip(), flete=_n(s[1].get()), flete_rd=_n(s[2].get()), pagado_rd=_n(s[3].get()))
+                           for s in self.sups if s[0].get().strip()]
+        d["lineas"] = []; self.orden_filas = []
+        for i, f in enumerate(self.filas):
+            p = f["prod"].get().strip()
+            if not p and not f["qty"].get().strip() and not f["precio"].get().strip(): continue
+            code = p.split(" | ")[0].strip()
+            pr = self.db.one("SELECT descr FROM products WHERE code=?", (code,))
+            d["lineas"].append(dict(suplidor=f["suplidor"].get().strip(), code=code if pr else "", descr=pr["descr"] if pr else p,
+                                    qty=_n(f["qty"].get()), precio=_n(f["precio"].get()), desc=_n(f["desc"].get()), upi=_n(f["upi"].get(), 1) or 1,
+                                    arancel=_n(f["arancel"].get()), selectivo=_n(f["selectivo"].get()), itbis=_n(f["itbis"].get())))
+            self.orden_filas.append(i)
+
+    CALC = ("bruto", "g", "unit", "costo", "b30", "b35", "b40", "b50", "venta", "origen", "local")
 
     def pintar(self, avisar=True):
+        for f in self.filas:
+            for k in self.CALC: f[k].set("")
+        for v in self.tot.values(): v.set("")
         try:
             self._de_pantalla()
+            res = calcular(self.d) if self.d["lineas"] else None
+            aviso = "" if res or self.d["lineas"] else "Escriba en las casillas amarillas: productos, tasa, gestión y fletes."
         except ValueError as e:
-            if avisar: messagebox.showwarning("Costeo", str(e), parent=self)
-            return None
-        self.ts.delete(*self.ts.get_children())
-        for i, s in enumerate(self.d["suplidores"]):
-            self.ts.insert("", "end", iid=str(i), values=(s["nombre"], m2(s.get("flete") or 0), m2(s.get("flete_rd") or 0), m2(s.get("pagado_rd") or 0)))
-        self.tl.delete(*self.tl.get_children())
-        res = None
-        try:
-            res = calcular(self.d)
-        except ValueError as e:
-            if avisar and self.d["lineas"]: messagebox.showwarning("Costeo", str(e), parent=self)
+            res, aviso = None, str(e)
+            if avisar: messagebox.showwarning("Costeo", aviso, parent=self)
         if res:
-            lin, T = res
-            for i, l in enumerate(lin):
-                self.tl.insert("", "end", iid=str(i), values=(l["suplidor"], l.get("code", ""), l.get("descr", ""), f"{l['qty']:g}",
-                               f"{l.get('precio') or 0:,.4f}".rstrip("0").rstrip("."), f"{l.get('desc') or 0:g}", f"{l['cant']:g}",
-                               m2(l["origen"]), m2(l["local"]), m2(l["costo"]), m2(l["venta"])))
-            txt = (f"Mercancía {m2(T['mercancia'])}   Fletes {m2(T['fletes'])}   Gestión {m2(T['gestion'])}   "
-                   f"Tributos al costo {m2(T['arancel'] + T['selectivo'])}   ITBIS {m2(T['itbis'])}\nCosto total RD$ {m2(T['costo'])}")
-        else:
-            for i, l in enumerate(self.d["lineas"]):
-                self.tl.insert("", "end", iid=str(i), values=(l.get("suplidor", ""), l.get("code", ""), l.get("descr", ""), f"{l.get('qty') or 0:g}",
-                               f"{l.get('precio') or 0:g}", f"{l.get('desc') or 0:g}", "", "", "", "", ""))
-            txt = "Ponga la tasa, los suplidores y los productos, y pulse Calcular."
-        if self.ordenes: txt += f"\nÓrdenes de compra creadas: {self.ordenes}"
-        elif self.cid: txt += "\nPendiente: todavía no se han creado las órdenes de compra."
+            lin, T = res; tasa = self.d["tasa"]
+            for i, l in zip(self.orden_filas, lin):
+                f = self.filas[i]; c = l["costo"]
+                for k, v in (("bruto", l["qty"] * (l.get("precio") or 0)), ("g", l["g"]), ("unit", l["g"] / l["cant"]), ("costo", c),
+                             ("b30", c * 1.42), ("b35", c * 1.53), ("b40", c * 1.66), ("b50", c / 0.5), ("venta", l["venta"]),
+                             ("origen", l["origen"]), ("local", l["local"])):
+                    f[k].set(m2(v))
+            self.tot["t_merc"].set(m2(T["mercancia"])); self.tot["t_flete"].set(m2(T["fletes"]))
+            self.tot["t_trib"].set(m2(T["arancel"] + T["selectivo"])); self.tot["t_itbis"].set(m2(T["itbis"])); self.tot["t_total"].set(m2(T["costo"]))
+        txt = aviso
+        if self.ordenes: txt += ("\n" if txt else "") + f"Órdenes de compra creadas: {self.ordenes}"
+        elif self.cid: txt += ("\n" if txt else "") + "Pendiente: todavía no se han creado las órdenes de compra."
         self.lbl.config(text=txt)
         return res
-
-    # ----- suplidores
-    def _sup_form(self, s):
-        r = _form(self, "Suplidor", [("nombre", "Suplidor", None), ("flete", "Flete en la moneda de la factura", None),
-                                     ("flete_rd", "Flete pagado en RD$", None),
-                                     ("pagado_rd", "Mercancía pagada en RD$ (si se pagó a otra tasa)", None)],
-                  dict(s, flete=f"{s.get('flete') or 0:g}", flete_rd=f"{s.get('flete_rd') or 0:g}", pagado_rd=f"{s.get('pagado_rd') or 0:g}"))
-        if not r: return None
-        try:
-            out = dict(nombre=r["nombre"], flete=_n(r["flete"]), flete_rd=_n(r["flete_rd"]), pagado_rd=_n(r["pagado_rd"]))
-        except ValueError:
-            messagebox.showwarning("Costeo", "Revise los montos.", parent=self); return None
-        if not out["nombre"]:
-            messagebox.showwarning("Costeo", "Ponga el nombre del suplidor.", parent=self); return None
-        return out
-
-    def sup_add(self):
-        s = self._sup_form(dict(nombre=""))
-        if not s: return
-        if any(x["nombre"].lower() == s["nombre"].lower() for x in self.d["suplidores"]):
-            messagebox.showwarning("Costeo", "Ese suplidor ya está en la lista.", parent=self); return
-        self.d["suplidores"].append(s); self.pintar(False)
-
-    def sup_edit(self):
-        sel = self.ts.selection()
-        if not sel: return
-        i = int(sel[0]); viejo = self.d["suplidores"][i]["nombre"]
-        s = self._sup_form(self.d["suplidores"][i])
-        if not s: return
-        self.d["suplidores"][i] = s
-        for l in self.d["lineas"]:
-            if l.get("suplidor") == viejo: l["suplidor"] = s["nombre"]
-        self.pintar(False)
-
-    def sup_del(self):
-        sel = self.ts.selection()
-        if not sel: return
-        n = self.d["suplidores"][int(sel[0])]["nombre"]
-        if any(l.get("suplidor") == n for l in self.d["lineas"]):
-            messagebox.showwarning("Costeo", "Ese suplidor tiene productos. Quite primero sus productos.", parent=self); return
-        del self.d["suplidores"][int(sel[0])]; self.pintar(False)
-
-    # ----- productos
-    def _lin_form(self, l):
-        if not self.d["suplidores"]:
-            messagebox.showwarning("Costeo", "Agregue primero el suplidor.", parent=self); return None
-        prods = [f"{p['code']} | {p['descr']}" for p in self.db.q("SELECT code, descr FROM products WHERE active=1 ORDER BY descr")]
-        actual = ""
-        if l.get("code"):
-            actual = next((x for x in prods if x.split(" | ")[0] == l["code"]), l["code"])
-        r = _form(self, "Producto", [("suplidor", "Suplidor", [s["nombre"] for s in self.d["suplidores"]]),
-                                     ("prod", "Producto de Diana", prods), ("qty", "Cantidad de la factura", None),
-                                     ("precio", "Precio unitario de la factura", None), ("desc", "% descuento", None),
-                                     ("upi", "Unidades de la factura por 1 de inventario", None),
-                                     ("arancel", "% arancel", None), ("selectivo", "% selectivo", None), ("itbis", "% ITBIS", None)],
-                  dict(suplidor=l.get("suplidor") or self.d["suplidores"][-1]["nombre"], prod=actual,
-                       qty=f"{l.get('qty') or 0:g}", precio=f"{l.get('precio') or 0:g}", desc=f"{l.get('desc') or 0:g}",
-                       upi=f"{l.get('upi') or 1:g}", arancel=f"{l.get('arancel') or 0:g}", selectivo=f"{l.get('selectivo') or 0:g}",
-                       itbis=f"{l.get('itbis') or 0:g}"))
-        if not r: return None
-        try:
-            code = r["prod"].split(" | ")[0].strip()
-            p = self.db.one("SELECT descr FROM products WHERE code=?", (code,))
-            out = dict(suplidor=r["suplidor"], code=code if p else "", descr=p["descr"] if p else r["prod"], qty=_n(r["qty"]),
-                       precio=_n(r["precio"]), desc=_n(r["desc"]), upi=_n(r["upi"], 1) or 1, arancel=_n(r["arancel"]),
-                       selectivo=_n(r["selectivo"]), itbis=_n(r["itbis"]))
-        except ValueError:
-            messagebox.showwarning("Costeo", "Revise las cantidades y los montos.", parent=self); return None
-        if out["suplidor"] not in [s["nombre"] for s in self.d["suplidores"]]:
-            messagebox.showwarning("Costeo", "Elija un suplidor de la lista.", parent=self); return None
-        if out["qty"] <= 0:
-            messagebox.showwarning("Costeo", "La cantidad debe ser mayor que cero.", parent=self); return None
-        return out
-
-    def lin_add(self):
-        l = self._lin_form({})
-        if l: self.d["lineas"].append(l); self.pintar(False)
-
-    def lin_edit(self):
-        sel = self.tl.selection()
-        if not sel: return
-        l = self._lin_form(self.d["lineas"][int(sel[0])])
-        if l: self.d["lineas"][int(sel[0])] = l; self.pintar(False)
-
-    def lin_del(self):
-        sel = self.tl.selection()
-        if sel: del self.d["lineas"][int(sel[0])]; self.pintar(False)
 
     # ----- acciones
     def guardar(self, callar=False):
