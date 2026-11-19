@@ -566,6 +566,11 @@ class DiarioTab:
 
     def aviso_balances(self):
         """El botón 'Conciliar Facturación y Diario' parpadea si hay algo pendiente de aplicar."""
+        try:   # venta cobrada directo en su asiento (banco / caja chica, sin CxC): se marca cobrada sola
+            d = self.app.facturas_cobradas_directo()
+            if d and not getattr(self.app, "_en_directo", False): self.app.cobradas_directo(d)
+        except Exception:
+            pass
         try:
             self._rev_on = bool(self.app.hay_pendientes())
         except Exception:

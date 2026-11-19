@@ -33,7 +33,7 @@ tk.Toplevel.__init__ = _toplevel_centrado
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.45"
+VERSION = "1.46"
 NOMBRE = "Diana"
 
 
@@ -1256,7 +1256,7 @@ class App:
 
     def cobradas_directo(self, nros, parent=None):
         """Facturas cuyo asiento cobró todo o parte directo a banco/caja (sin CxC) y que en Facturación siguen
-        con saldo: pregunta si se registra ese cobro (total o parcial). Se registra en Facturación SIN otro
+        con saldo: registra solo ese cobro (total o parcial), sin preguntar. Se registra en Facturación SIN otro
         asiento (el dinero ya entró con el asiento de la factura)."""
         from tkinter import simpledialog
         gl, db = self.gl, self.db
@@ -1268,17 +1268,7 @@ class App:
             inv = db.one("SELECT date, name, total FROM invoices WHERE nro=?", (n,))
             saldo = db.invoice_saldo(n)
             tipo = "todo" if abs(monto - saldo) < 0.005 else "una parte"
-            if not messagebox.askyesno("Venta cobrada directo",
-                                       f"Factura {n} {inv['name'] or ''}   Total {m2(inv['total'] or 0)}\n"
-                                       f"Su asiento cobró {tipo} directo (sin Cuentas por cobrar): {m2(monto)}.\n"
-                                       f"En Facturación tiene saldo pendiente: {m2(saldo)}.\n\n"
-                                       f"¿Registrar en Facturación el cobro de {m2(monto)}?\n"
-                                       "(No se crea otro asiento: ese dinero ya está en el asiento de la factura.)",
-                                       parent=parent or self.root):
-                continue
-            v = simpledialog.askfloat("Venta cobrada directo", f"Monto cobrado de la factura {n}:", initialvalue=monto,
-                                      minvalue=0.01, maxvalue=saldo, parent=parent or self.root)
-            if not v: continue
+            v = monto   # automático: el dinero ya entró con el asiento de la factura, no se pregunta
             db.add_payment(n, round(v, 2), "Contado", parse_date(inv["date"]) or datetime.date.today(), self.NOTA_DIRECTO)
             pid = db.one("SELECT MAX(id) FROM payments")[0]
             gl.con.execute("INSERT OR REPLACE INTO gl_ya_en_diario(ref, fecha) VALUES(?,?)",
@@ -1933,6 +1923,15 @@ class App:
         return os.path.join(self.db.carpeta("F"), f"fa_{nro}.pdf")
 
     def refresh_all(self):
+        if not getattr(self, "_en_directo", False):   # facturas cobradas directo en su asiento: nunca quedan pendientes de cobro
+            self._en_directo = True
+            try:
+                d = self.facturas_cobradas_directo()
+                if d: self.cobradas_directo(d)
+            except Exception:
+                pass
+            finally:
+                self._en_directo = False
         self.load_ventas(); self.load_clientes(); self.load_productos(); self.load_seq(); self.load_cxc(); self.load_cxp(); self.update_banner()
         for t in getattr(self, "docs", {}).values(): t.load()
         for t in (getattr(self, "diario", None), getattr(self, "catalogo", None)):
