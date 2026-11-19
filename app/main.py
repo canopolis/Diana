@@ -32,8 +32,9 @@ def _toplevel_centrado(self, *a, **k):
 tk.Toplevel.__init__ = _toplevel_centrado
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
+import costeo
 
-VERSION = "1.53"
+VERSION = "1.54"
 NOMBRE = "Diana"
 
 
@@ -953,6 +954,7 @@ class DocTab:
             acts.append(("Convertir en factura", self.to_invoice))
         if kind == "O":
             acts.append(("Marcar recibida / pendiente", self.toggle_recv))
+            acts.append(("Costeo de importación", lambda: costeo.ListaCosteos(self.app)))
         if kind in ("NC", "ND"):
             acts.append(("Asignar NCF", self.assign_ncf))
         acts.append(("Eliminar", self.delete))
