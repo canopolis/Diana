@@ -312,6 +312,21 @@ class CosteoWin(tk.Toplevel):
         e.bind("<FocusOut>", lambda ev: self.pintar(avisar=False)); e.bind("<Return>", lambda ev: self.pintar(avisar=False))
         return e
 
+    def _buscar(self, txt):
+        """Productos cuyo código o nombre contiene todo lo escrito (sin escribir nada, o con uno ya elegido, salen todos)."""
+        t = txt.strip().lower()
+        if not t or txt.strip() in self.prods: return self.prods
+        pal = t.split()
+        return [p for p in self.prods if all(w in p.lower() for w in pal)]
+
+    def _elegir(self, x):
+        r = self._buscar(x.get())
+        if len(r) == 1:
+            x.set(r[0]); x.icursor("end"); self.pintar(avisar=False)
+        elif r:
+            x.event_generate("<Down>")          # abre la lista ya filtrada
+        return "break"
+
     def _fila(self):
         r = len(self.filas) + 1; f = {}
         for c, (k, t, w, entra, op) in enumerate(self.COLS):
@@ -320,8 +335,10 @@ class CosteoWin(tk.Toplevel):
                 x = ttk.Combobox(self.tab, textvariable=f[k], width=w, font=self.F, values=self.prods if k == "prod" else [],
                                  style="Ancho.TCombobox" if k == "prod" else "TCombobox")
                 if k == "prod":
-                    x.configure(postcommand=lambda x=x: x.configure(values=self.prods))
+                    x.configure(postcommand=lambda x=x: x.configure(values=self._buscar(x.get())), state="disabled")
                     x.bind("<FocusIn>", lambda ev, f=f: setattr(self, "fila_prod", f))
+                    x.bind("<Return>", lambda ev, x=x: self._elegir(x))
+                    f["suplidor"].trace_add("write", lambda *a, x=x, v=f["suplidor"]: x.configure(state="normal" if v.get().strip() else "disabled"))
                 x.bind("<<ComboboxSelected>>", lambda ev: self.pintar(avisar=False)); x.bind("<FocusOut>", lambda ev: self.pintar(avisar=False))
                 if k == "suplidor": x.configure(state="readonly", postcommand=lambda x=x: x.configure(values=[""] + self._nombres()))
             elif entra:
