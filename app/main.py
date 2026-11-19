@@ -33,7 +33,7 @@ tk.Toplevel.__init__ = _toplevel_centrado
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.47"
+VERSION = "1.48"
 NOMBRE = "Diana"
 
 
@@ -133,7 +133,7 @@ def _askyesno_si_no(title=None, message=None, **opts):
 
 
 messagebox.askyesno = _askyesno_si_no
-TERMINOS = ["Efectivo", "Tarjeta de crédito/débito", "15 Días", "30 Días", "45 Días", "60 Días", "Credito", "Otros"]
+TERMINOS = ["Efectivo", "Transferencia/Cheque", "Tarjeta de crédito/débito", "15 Días", "30 Días", "45 Días", "60 Días", "Credito", "Otros"]
 DIAS = {"15 Días": 15, "30 Días": 30, "45 Días": 45, "60 Días": 60, "Credito": 30}
 
 
@@ -1359,7 +1359,7 @@ class App:
             return dmy(parse_date(s[:10])) if s else ""
         def a_credito(fecha, vence, terms):
             """Factura/compra a crédito: vence después de su fecha y no es de contado/efectivo."""
-            if (terms or "").strip().lower() in ("efectivo", "contado", "cash"): return False
+            if (terms or "").strip().lower() in ("efectivo", "contado", "cash", "transferencia/cheque"): return False
             return bool(vence) and (vence or "")[:10] > (fecha or "")[:10]
         def lns(rows):
             return [dict(qty=r["qty"] or 0, price=r["price"] or 0, cost=r["cost"] or 0, itbis=r["itbis"] or 0,

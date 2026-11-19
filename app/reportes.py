@@ -637,7 +637,8 @@ def ordenes_compra(db, d1, d2, ruta):
 IT1_TIPOS = ["E31", "E32", "E33", "E34", "E44", "E45", "E46"]
 IT1_NOM = {"E31": "Crédito fiscal", "E32": "Consumo", "E33": "Nota de débito", "E34": "Nota de crédito",
            "E44": "Regímenes especiales", "E45": "Gubernamental", "E46": "Exportaciones"}
-NAT_CRED, NAT_EFEC, NAT_TARJ = "Crédito", "Efectivo (cheque depósito o transferencia)", "Tarjeta de crédito o débito"
+NAT_CRED, NAT_EFEC, NAT_TARJ = "Crédito", "Efectivo", "Tarjeta de crédito o débito"
+NAT_TRANS = "Pagos con transferencia/cheque"
 
 
 def _naturaleza(term):
@@ -646,7 +647,9 @@ def _naturaleza(term):
     t = "".join(ch for ch in t if unicodedata.category(ch) != "Mn")
     if "TARJETA" in t:
         return NAT_TARJ
-    if any(w in t for w in ("EFECTIVO", "CHEQUE", "DEPOSITO", "TRANSFERENCIA")):
+    if any(w in t for w in ("CHEQUE", "DEPOSITO", "TRANSFERENCIA")):
+        return NAT_TRANS
+    if "EFECTIVO" in t:
         return NAT_EFEC
     return NAT_CRED
 
@@ -733,7 +736,7 @@ def llenado_it1(db, fin, ruta):
     fila(f"Total neto: {sum(v[0] for v in by.values())} comprobantes", m2(sum(SG(t) * by[t][1] for t in IT1_TIPOS)),
          "E34 restado", True)
     h3("Por naturaleza de venta")
-    orden = [NAT_CRED, NAT_EFEC, NAT_TARJ]
+    orden = [NAT_CRED, NAT_EFEC, NAT_TRANS, NAT_TARJ]
     for n in sorted(grupos, key=lambda x: orden.index(x) if x in orden else 9):
         g = grupos[n]
         fila(f"{n}: {g['n']} comprobantes", m2(g["t"]),
