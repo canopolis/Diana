@@ -33,7 +33,7 @@ tk.Toplevel.__init__ = _toplevel_centrado
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.46"
+VERSION = "1.47"
 NOMBRE = "Diana"
 
 
@@ -1308,7 +1308,7 @@ class App:
 
     def pagadas_directo(self, nros, parent=None):
         """Registra en Facturación (SIN otro asiento) lo que el asiento de la compra ya pagó directo, para que
-        deje de salir en Cuentas por pagar. Pregunta una vez por compra."""
+        deje de salir en Cuentas por pagar. Automático, sin preguntar (igual que las facturas cobradas directo)."""
         gl, db = self.gl, self.db
         gl.con.execute("CREATE TABLE IF NOT EXISTS gl_ya_en_diario(ref TEXT PRIMARY KEY, fecha TEXT)")
         hechos = 0
@@ -1318,14 +1318,6 @@ class App:
             o = db.one("SELECT date, name, total FROM odocs WHERE kind='O' AND nro=?", (n,))
             saldo = db.ap_saldo(n)
             tipo = "toda" if abs(monto - saldo) < 0.005 else "una parte"
-            if not messagebox.askyesno("Compra pagada directo",
-                                       f"Compra {n} {o['name'] or ''}   Total {m2(o['total'] or 0)}\n"
-                                       f"Su asiento pagó {tipo} directo (sin Suplidores por pagar): {m2(monto)}.\n"
-                                       f"En Cuentas por pagar todavía sale con saldo: {m2(saldo)}.\n\n"
-                                       f"¿Marcar como pagado {m2(monto)}?\n"
-                                       "(No se crea otro asiento: ese pago ya está en el asiento de la compra.)",
-                                       parent=parent or self.root):
-                continue
             db.add_ap_payment(n, round(monto, 2), "Directo", parse_date(o["date"]) or datetime.date.today(), self.NOTA_DIRECTO_C)
             pid = db.one("SELECT MAX(id) FROM ap_payments")[0]
             gl.con.execute("INSERT OR REPLACE INTO gl_ya_en_diario(ref, fecha) VALUES(?,?)",
@@ -1928,6 +1920,8 @@ class App:
             try:
                 d = self.facturas_cobradas_directo()
                 if d: self.cobradas_directo(d)
+                c = self.compras_pagadas_directo()
+                if c: self.pagadas_directo(c)
             except Exception:
                 pass
             finally:

@@ -569,6 +569,8 @@ class DiarioTab:
         try:   # venta cobrada directo en su asiento (banco / caja chica, sin CxC): se marca cobrada sola
             d = self.app.facturas_cobradas_directo()
             if d and not getattr(self.app, "_en_directo", False): self.app.cobradas_directo(d)
+            c = self.app.compras_pagadas_directo()
+            if c and not getattr(self.app, "_en_directo", False): self.app.pagadas_directo(c)
         except Exception:
             pass
         try:
