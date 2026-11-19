@@ -223,7 +223,7 @@ class CosteoWin(tk.Toplevel):
             ("selectivo", "%\nselectivo", 10, 1, 1), ("itbis", "%\nITBIS", 8, 1, 1),
             ("g", "Costo\ntotal", 12, 0, 0), ("unit", "Costo\nunitario", 11, 0, 0),
             ("origen", "Costo origen + flete\no shipping RD$", 20, 0, 0), ("local", "Costo local\nRD$", 13, 0, 0),
-            ("costo", "COSTO TOTAL\nRD$", 13, 0, 0), ("itbis_u", "ITBIS pagado\nRD$", 13, 0, 1),
+            ("costo", "COSTO TOTAL\nRD$", 13, 0, 0), ("itbis_u", "ITBIS pagado en\nimportación", 16, 0, 1),
             ("b30", "30%\nbeneficio", 12, 0, 0), ("b35", "35%\nbeneficio", 12, 0, 0), ("b40", "40%\nbeneficio", 12, 0, 0),
             ("b50", "50%\nbeneficio", 12, 0, 0), ("venta", "Margen\npersonalizado", 14, 0, 0)]
     COSTOS = ("origen", "local", "costo")       # columnas de costo, sombreadas
