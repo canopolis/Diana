@@ -25,7 +25,32 @@ def nuevo():
                 margen=30.0, suplidores=[], lineas=[])
 
 
+MONEDAS = ("RD$", "US$", "EURO")
+
+
+def tasa_de(d, moneda):
+    return {"RD$": 1.0, "EURO": d.get("tasa_euro") or 0}.get(moneda, d.get("tasa") or 0)
+
+
 def calcular(d):
+    """Cada suplidor tiene su moneda (pesos, dólares o euros). Todo se pasa a pesos con su tasa y se costea."""
+    sup = {s["nombre"]: s for s in d.get("suplidores", [])}
+    for s_ in d.get("suplidores", []):
+        for mon in (s_.get("moneda") or "US$", s_.get("flete_moneda") or s_.get("moneda") or "US$"):
+            if tasa_de(d, mon) <= 0:
+                raise ValueError("Ponga la tasa del dólar." if mon == "US$" else "Ponga la tasa del euro.")
+    r = lambda n: tasa_de(d, (sup.get(n) or {}).get("moneda") or "US$")
+    d2 = dict(d, tasa=1.0, flete_general=0.0,
+              suplidores=[dict(x, flete=0.0, flete_rd=(x.get("flete") or 0) * tasa_de(d, x.get("flete_moneda") or x.get("moneda") or "US$")
+                               + (x.get("flete_rd") or 0)) for x in d.get("suplidores", [])],
+              lineas=[dict(l, precio=(l.get("precio") or 0) * (r(l.get("suplidor")) if l.get("suplidor") in sup else 1)) for l in d.get("lineas", [])])
+    lin, T = _calcular(d2)
+    for l, orig in zip(lin, d.get("lineas", [])):
+        l["tasa_s"] = r(l["suplidor"]); l["precio_m"] = orig.get("precio") or 0; l["moneda"] = (sup[l["suplidor"]].get("moneda") or "US$")
+    return lin, T
+
+
+def _calcular(d):
     """Devuelve (lineas calculadas, totales). Montos por unidad de inventario en RD$.
     suplidor: nombre, flete (moneda de la factura), flete_rd (RD$), pagado_rd (RD$ pagados por la mercancía; 0 = usa
     precio x tasa). linea: suplidor, code, descr, qty, precio, desc (%), upi (unidades de la factura por cada unidad de
@@ -38,9 +63,9 @@ def calcular(d):
     for l in d.get("lineas", []):
         qty = l.get("qty") or 0
         if qty <= 0:
-            raise ValueError(f"La cantidad de '{l.get('descr') or l.get('code')}' debe ser mayor que cero.")
+            raise ValueError(f"Falta la cantidad de '{l.get('descr') or l.get('code')}'.")
         if l.get("suplidor") not in sup:
-            raise ValueError(f"El producto '{l.get('descr') or l.get('code')}' no tiene suplidor.")
+            raise ValueError(f"Elija el suplidor de '{l.get('descr') or l.get('code')}'.")
         L.append(dict(l, g=qty * (l.get("precio") or 0) * (1 - (l.get("desc") or 0) / 100.0)))
     if not L:
         raise ValueError("Agregue al menos un producto.")
@@ -56,7 +81,7 @@ def calcular(d):
         por_sup[l["suplidor"]] = por_sup.get(l["suplidor"], 0) + l["g"]
     total_g = sum(l["g"] for l in L)
     if total_g <= 0:
-        raise ValueError("Los productos no tienen precio.")
+        raise ValueError("Falta el precio de los productos.")
     ges = (d.get("gestion") or 0) / tasa
     fg = d.get("flete_general") or 0
     margen = (d.get("margen") or 0) / 100.0
@@ -144,9 +169,9 @@ def exportar_excel(db, cid, d, carpeta):
     verde = PatternFill("solid", fgColor="1F4E3D"); claro = PatternFill("solid", fgColor="EAF2EC")
     fino = Side(style="thin", color="C9D1CC"); caja = Border(left=fino, right=fino, top=fino, bottom=fino)
     ws["A1"] = f"Costeo de importación {cid}: {d.get('nombre', '')}"; ws["A1"].font = F(bold=True, size=11)
-    ws["A2"] = f"Fecha {d['fecha'][8:10]}/{d['fecha'][5:7]}/{d['fecha'][:4]}   Tasa {d['tasa']:,.4f}   Gestión RD$ {m2(d.get('gestion') or 0)}"
+    ws["A2"] = f"Fecha {d['fecha'][8:10]}/{d['fecha'][5:7]}/{d['fecha'][:4]}   Tasa dólar {d.get('tasa') or 0:,.4f}   Tasa euro {d.get('tasa_euro') or 0:,.4f}   Gestión RD$ {m2(d.get('gestion') or 0)}"
     ws["A2"].font = F()
-    cols = ["Suplidor", "Código", "Producto", "Cantidad", "Precio", "% desc.", "Unid. inventario", "Costo origen RD$",
+    cols = ["Suplidor", "Código", "Producto", "Cantidad", "Precio (moneda del suplidor)", "% desc.", "Unid. inventario", "Costo origen + flete o shipping RD$",
             "Costo local RD$", "Costo total RD$", f"Venta {d.get('margen') or 0:g}% margen", "ITBIS RD$", "Total RD$",
             "30% beneficio", "35% beneficio", "40% beneficio", "50% beneficio"]
     for c, t in enumerate(cols, 1):
@@ -154,7 +179,7 @@ def exportar_excel(db, cid, d, carpeta):
         x.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     r = 5
     for l in lin:
-        vals = [l["suplidor"], l.get("code", ""), l.get("descr", ""), l["qty"], l.get("precio") or 0, l.get("desc") or 0,
+        vals = [l["suplidor"], l.get("code", ""), l.get("descr", ""), l["qty"], l.get("precio_m") or 0, l.get("desc") or 0,
                 l["cant"], l["origen"], l["local"], l["costo"], l["venta"], l["itbis_u"], l["costo"] * l["cant"],
                 l["costo"] * 1.42, l["costo"] * 1.53, l["costo"] * 1.66, l["costo"] / 0.5]   # mismos factores de la hoja
         for c, v in enumerate(vals, 1):
@@ -165,15 +190,17 @@ def exportar_excel(db, cid, d, carpeta):
     x = ws.cell(r, 12, "Total"); x.font = F(bold=True)
     x = ws.cell(r, 13, T["costo"]); x.font = F(bold=True); x.number_format = "#,##0.00"; x.fill = claro
     r += 2
-    ws.cell(r, 1, "Suplidor").font = F(bold=True); ws.cell(r, 2, "Flete").font = F(bold=True)
-    ws.cell(r, 3, "Flete RD$").font = F(bold=True); ws.cell(r, 4, "Origen RD$").font = F(bold=True)
+    ws.cell(r, 1, "Suplidor").font = F(bold=True); ws.cell(r, 2, "Flete o shipping pagado en origen").font = F(bold=True)
+    ws.cell(r, 3, "Moneda del flete o shipping").font = F(bold=True); ws.cell(r, 4, "Origen RD$").font = F(bold=True)
     ws.cell(r, 5, "Local RD$").font = F(bold=True)
     for s in d["suplidores"]:
         r += 1
         p = T["por_suplidor"].get(s["nombre"], dict(origen=0, local=0))
-        for c, v in enumerate([s["nombre"], s.get("flete") or 0, s.get("flete_rd") or 0, p["origen"], p["local"]], 1):
+        fl, fm = s.get("flete") or 0, s.get("flete_moneda") or s.get("moneda") or "US$"
+        if not fl and s.get("flete_rd"): fl, fm = s["flete_rd"], "RD$"
+        for c, v in enumerate([s["nombre"], fl, fm, p["origen"], p["local"]], 1):
             x = ws.cell(r, c, v); x.font = F()
-            if c > 1: x.number_format = "#,##0.00"
+            if c in (2, 4, 5): x.number_format = "#,##0.00"
     for c, w in zip("ABCDEFGHIJKLMNOPQ", (16, 12, 34, 11, 11, 9, 12, 16, 15, 15, 16, 12, 16, 14, 14, 14, 14)):
         ws.column_dimensions[c].width = w
     ws.row_dimensions[4].height = 32
@@ -185,17 +212,18 @@ def exportar_excel(db, cid, d, carpeta):
 
 # ---------------------------------------------------------------- ventanas
 class CosteoWin(tk.Toplevel):
-    """Pantalla como la hoja de Excel: una tabla donde se escribe directo en las casillas amarillas, el desglose
-    de cargos debajo y, al lado, los fletes por suplidor. Todo se recalcula solo al salir de cada casilla."""
+    """Pantalla como la hoja de Excel, en tres pasos de arriba hacia abajo: 1) tasas y gestión, 2) suplidores con su
+    moneda y su flete, 3) productos. Se escribe en las casillas amarillas y todo se calcula solo."""
     VERDE, CLARO, ENTRA, TXT = "#1F4E3D", "#EAF2EC", "#FFF9DB", "#26332C"
-    # (clave, título, ancho, se escribe)
-    COLS = [("prod", "Item #", 30, 1), ("precio", "price", 9, 1), ("qty", "cantidad", 8, 1), ("bruto", "Precio bruto", 11, 0),
-            ("desc", "% descuento", 8, 1), ("g", "Costo Total", 11, 0), ("unit", "Costo unitario", 10, 0),
-            ("costo", "COSTO RD$", 12, 0), ("b30", "30% beneficio", 11, 0), ("b35", "35% beneficio", 11, 0),
-            ("b40", "40% beneficio", 11, 0), ("b50", "50% beneficio", 11, 0), ("venta", "Margen personalizado", 12, 0),
-            ("origen", "Costo origen + shipping RD$", 13, 0), ("local", "Costo local RD$", 12, 0),
-            ("suplidor", "Suplidor", 12, 1), ("upi", "Unid. por 1 de inventario", 9, 1),
-            ("arancel", "% arancel", 7, 1), ("selectivo", "% selectivo", 7, 1), ("itbis", "% ITBIS", 7, 1)]
+    # (clave, título, ancho, se escribe, es de las columnas opcionales)
+    COLS = [("suplidor", "Suplidor", 13, 1, 0), ("prod", "Producto", 46, 1, 0), ("precio", "Precio", 10, 1, 0),
+            ("qty", "Cantidad", 9, 1, 0), ("bruto", "Precio\nbruto", 12, 0, 0), ("desc", "%\ndescuento", 11, 1, 0),
+            ("upi", "Unidades por 1\nde inventario", 14, 1, 1), ("arancel", "%\narancel", 9, 1, 1),
+            ("selectivo", "%\nselectivo", 10, 1, 1), ("itbis", "%\nITBIS", 8, 1, 1),
+            ("g", "Costo\ntotal", 12, 0, 0), ("unit", "Costo\nunitario", 11, 0, 0), ("costo", "COSTO\nRD$", 13, 0, 0),
+            ("b30", "30%\nbeneficio", 12, 0, 0), ("b35", "35%\nbeneficio", 12, 0, 0), ("b40", "40%\nbeneficio", 12, 0, 0),
+            ("b50", "50%\nbeneficio", 12, 0, 0), ("venta", "Margen\npersonalizado", 14, 0, 0),
+            ("origen", "Costo origen + flete\no shipping RD$", 20, 0, 0), ("local", "Costo local\nRD$", 13, 0, 0)]
     FILAS, SUPS = 18, 6
 
     def __init__(self, app, cid=None):
@@ -206,60 +234,76 @@ class CosteoWin(tk.Toplevel):
         if cid:
             r = self.db.one("SELECT datos, ordenes FROM costeos WHERE id=?", (cid,))
             self.d = json.loads(r["datos"]); self.ordenes = r["ordenes"] or ""
-        self.title("Costeo de importación"); self.geometry("1320x700"); self.configure(bg="white")
+        self.title("Costeo de importación"); self.geometry("1380x730"); self.configure(bg="white")
+        try: ttk.Style(self).configure("Ancho.TCombobox", postoffset=(0, 0, 330, 0))   # la lista sale más ancha que la casilla
+        except Exception: pass
+        self.fila_prod = None
         self.F = ("Verdana", 9); self.FB = ("Verdana", 9, "bold")
         self.prods = [f"{p['code']} | {p['descr']}" for p in self.db.q("SELECT code, descr FROM products WHERE active=1 ORDER BY descr")]
-        # ----- fila de arriba
-        top = tk.Frame(self, bg="white"); top.pack(fill="x", padx=10, pady=(8, 4))
-        self.v = {}
-        for k, lab, w in (("fecha", "FECHA", 11), ("nombre", "NOMBRE", 30), ("margen", "MARGEN %", 6)):
-            tk.Label(top, text=lab, font=self.FB, bg=self.VERDE, fg="white", padx=6).pack(side="left", padx=(0, 0))
-            self.v[k] = tk.StringVar()
-            self._entrada(top, self.v[k], w).pack(side="left", padx=(0, 12))
-        for t, c in (("Cerrar", self.destroy), ("Exportar a Excel", self.excel), ("Crear órdenes de compra", self.ordenar),
-                     ("Guardar", self.guardar), ("Agregar filas", self.mas_filas)):
+        self.v, self.tot = {}, {}
+        tit = lambda padre, t: tk.Label(padre, text=t, font=self.FB, bg=self.VERDE, fg="white", anchor="w", padx=6)
+        rot = lambda padre, t, w: tk.Label(padre, text=t, font=self.FB, bg=self.CLARO, fg=self.TXT, anchor="w", width=w, padx=4)
+        # ----- arriba: fecha, nombre y botones
+        top = tk.Frame(self, bg="white"); top.pack(fill="x", padx=10, pady=(8, 6))
+        for k, lab, w in (("fecha", "Fecha", 11), ("nombre", "Nombre de la compra", 30)):
+            tk.Label(top, text=lab, font=self.FB, bg=self.VERDE, fg="white", padx=6).pack(side="left")
+            self.v[k] = tk.StringVar(); self._entrada(top, self.v[k], w).pack(side="left", padx=(0, 12))
+        for t, c in (("Cerrar", self.destroy), ("Exportar a Excel", self.excel), ("Crear órdenes de compra", self.ordenar), ("Guardar", self.guardar)):
             ttk.Button(top, text=t, command=c).pack(side="right", padx=3)
-        # ----- tabla principal (con barras de desplazamiento)
-        marco = tk.Frame(self, bg="white"); marco.pack(fill="both", expand=True, padx=10)
+        # ----- pasos 1 y 2, y el desglose (solo lectura)
+        med = tk.Frame(self, bg="white"); med.pack(fill="x", padx=10)
+        p1 = tk.Frame(med, bg="#C9D1CC"); p1.pack(side="left", anchor="n")
+        tit(p1, "1. Tasas y gestión").grid(row=0, column=0, columnspan=2, sticky="nsew", pady=(0, 1))
+        for r, (k, lab) in enumerate((("tasa", "Tasa del dólar (RD$)"), ("tasa_euro", "Tasa del euro (RD$)"),
+                                      ("gestion", "Gestión y cargos de aquí (RD$)"), ("margen", "Margen personalizado (%)")), 1):
+            rot(p1, lab, 27).grid(row=r, column=0, sticky="nsew", padx=(0, 1), pady=(0, 1))
+            self.v[k] = tk.StringVar(); self._entrada(p1, self.v[k], 12, "e").grid(row=r, column=1, sticky="nsew", pady=(0, 1))
+        p2 = tk.Frame(med, bg="#C9D1CC"); p2.pack(side="left", anchor="n", padx=12)
+        tit(p2, "2. Suplidores, su moneda y su flete o shipping pagado en origen").grid(row=0, column=0, columnspan=4, sticky="nsew", pady=(0, 1))
+        for c, (t, w) in enumerate((("Suplidor", 14), ("Moneda de\nla factura", 12), ("Flete o shipping\npagado en origen", 17),
+                                    ("Moneda del flete\no shipping", 17))):
+            tk.Label(p2, text=t, font=self.FB, bg=self.CLARO, fg=self.TXT, width=w, height=2, justify="center").grid(row=1, column=c, sticky="nsew", padx=(0, 1), pady=(0, 1))
+        self.sups = []
+        for r in range(max(self.SUPS, len(self.d["suplidores"]))):
+            fila = [tk.StringVar() for _ in range(4)]
+            self._entrada(p2, fila[0], 14).grid(row=r + 2, column=0, sticky="nsew", padx=(0, 1), pady=(0, 1))
+            for c in (1, 3):   # moneda de la factura y moneda del shipping
+                cb = ttk.Combobox(p2, textvariable=fila[c], values=MONEDAS, width=8, font=self.F, state="readonly")
+                cb.grid(row=r + 2, column=c, sticky="nsew", padx=(0, 1), pady=(0, 1)); cb.bind("<<ComboboxSelected>>", lambda ev: self.pintar(avisar=False))
+            self._entrada(p2, fila[2], 17, "e").grid(row=r + 2, column=2, sticky="nsew", padx=(0, 1), pady=(0, 1))
+            self.sups.append(fila)
+        dg = tk.Frame(med, bg="#C9D1CC"); dg.pack(side="left", anchor="n")
+        tit(dg, "Desglose de cargos (se calcula solo)").grid(row=0, column=0, columnspan=2, sticky="nsew", pady=(0, 1))
+        for r, (k, lab) in enumerate((("t_merc", "Mercancía RD$"), ("t_flete", "Flete o shipping pagado en origen RD$"), ("t_ges", "Gestión RD$"),
+                                      ("t_trib", "Arancel + selectivo RD$"), ("t_itbis", "ITBIS RD$ (no va al costo)"), ("t_total", "Total general RD$")), 1):
+            rot(dg, lab, 37).grid(row=r, column=0, sticky="nsew", padx=(0, 1), pady=(0, 1))
+            self.tot[k] = tk.StringVar()
+            tk.Label(dg, textvariable=self.tot[k], font=self.FB if k == "t_total" else self.F, bg=self.CLARO if k == "t_total" else "white",
+                     fg=self.TXT, anchor="e", width=13, padx=4).grid(row=r, column=1, sticky="nsew", pady=(0, 1))
+        # ----- paso 3: productos
+        bar = tk.Frame(self, bg="white"); bar.pack(fill="x", padx=10, pady=(8, 0))
+        tit(bar, "3. Productos (el precio va en la moneda de su suplidor)").pack(side="left")
+        ttk.Button(bar, text="Agregar filas", command=self.mas_filas).pack(side="left", padx=(10, 3))
+        ttk.Button(bar, text="Crear producto nuevo", command=self.producto_nuevo).pack(side="left", padx=(3, 10))
+        self.ver_mas = tk.BooleanVar(value=any((l.get("upi") or 1) != 1 or l.get("arancel") or l.get("selectivo") or l.get("itbis") for l in self.d["lineas"]))
+        tk.Checkbutton(bar, text="Mostrar tributos y unidades de inventario", variable=self.ver_mas, command=self._opcionales,
+                       font=self.F, bg="white", activebackground="white").pack(side="left")
+        marco = tk.Frame(self, bg="white"); marco.pack(fill="both", expand=True, padx=10, pady=(2, 0))
         self.cv = tk.Canvas(marco, bg="white", highlightthickness=0)
         sy = ttk.Scrollbar(marco, orient="vertical", command=self.cv.yview); sx = ttk.Scrollbar(marco, orient="horizontal", command=self.cv.xview)
         self.cv.configure(yscrollcommand=sy.set, xscrollcommand=sx.set)
         sy.pack(side="right", fill="y"); sx.pack(side="bottom", fill="x"); self.cv.pack(fill="both", expand=True)
         self.tab = tk.Frame(self.cv, bg="#C9D1CC"); self.cv.create_window((0, 0), window=self.tab, anchor="nw")
         self.tab.bind("<Configure>", lambda e: self.cv.configure(scrollregion=self.cv.bbox("all")))
-        for c, (k, t, w, _) in enumerate(self.COLS):
-            tk.Label(self.tab, text=t, font=self.FB, bg=self.VERDE, fg="white", width=w, wraplength=w * 8, height=3,
-                     justify="center").grid(row=0, column=c, padx=(0, 1), pady=(0, 1), sticky="nsew")
+        self.extra = []   # casillas de las columnas opcionales
+        for c, (k, t, w, _, op) in enumerate(self.COLS):
+            x = tk.Label(self.tab, text=t, font=self.FB, bg=self.VERDE, fg="white", width=w, height=2, justify="center")
+            x.grid(row=0, column=c, padx=(0, 1), pady=(0, 1), sticky="nsew")
+            if op: self.extra.append(x)
         self.filas = []
         for _ in range(max(self.FILAS, len(self.d["lineas"]))): self._fila()
-        # ----- abajo: desglose de cargos y fletes por suplidor
-        bajo = tk.Frame(self, bg="white"); bajo.pack(fill="x", padx=10, pady=8)
-        dg = tk.Frame(bajo, bg="#C9D1CC"); dg.pack(side="left", anchor="n")
-        tk.Label(dg, text="Desglose de cargos", font=self.FB, bg=self.VERDE, fg="white").grid(row=0, column=0, columnspan=2, sticky="nsew", pady=(0, 1))
-        self.tot = {}
-        for r, (k, lab, entra) in enumerate((("tasa", "Tasa (RD$ por US$)", 1), ("flete_general", "shipping compartido", 1),
-                                             ("gestion", "Gestion RD$", 1), ("t_merc", "subtotal mercancía RD$", 0),
-                                             ("t_flete", "fletes RD$", 0), ("t_trib", "arancel + selectivo RD$", 0),
-                                             ("t_itbis", "ITBIS RD$ (no va al costo)", 0), ("t_total", "total general RD$", 0)), 1):
-            tk.Label(dg, text=lab, font=self.FB, bg=self.CLARO, fg=self.TXT, anchor="w", width=26, padx=4).grid(row=r, column=0, sticky="nsew", padx=(0, 1), pady=(0, 1))
-            if entra:
-                self.v[k] = tk.StringVar(); self._entrada(dg, self.v[k], 14).grid(row=r, column=1, sticky="nsew", pady=(0, 1))
-            else:
-                self.tot[k] = tk.StringVar()
-                tk.Label(dg, textvariable=self.tot[k], font=self.FB if k == "t_total" else self.F, bg=self.CLARO if k == "t_total" else "white",
-                         fg=self.TXT, anchor="e", width=14, padx=4).grid(row=r, column=1, sticky="nsew", pady=(0, 1))
-        fl = tk.Frame(bajo, bg="#C9D1CC"); fl.pack(side="left", anchor="n", padx=24)
-        tk.Label(fl, text="Fletes por suplidor", font=self.FB, bg=self.VERDE, fg="white").grid(row=0, column=0, columnspan=4, sticky="nsew", pady=(0, 1))
-        for c, (t, w) in enumerate((("Suplidor", 16), ("Flete", 11), ("Flete en RD$", 12), ("Mercancía pagada en RD$", 20))):
-            tk.Label(fl, text=t, font=self.FB, bg=self.CLARO, fg=self.TXT, width=w).grid(row=1, column=c, sticky="nsew", padx=(0, 1), pady=(0, 1))
-        self.sups = []
-        for r in range(max(self.SUPS, len(self.d["suplidores"]))):
-            fila = [tk.StringVar() for _ in range(4)]
-            for c, (var, w) in enumerate(zip(fila, (16, 11, 12, 20))):
-                self._entrada(fl, var, w, "w" if c == 0 else "e").grid(row=r + 2, column=c, sticky="nsew", padx=(0, 1), pady=(0, 1))
-            self.sups.append(fila)
-        self.lbl = tk.Label(bajo, text="", font=self.F, bg="white", fg=self.TXT, justify="left", anchor="nw"); self.lbl.pack(side="left", anchor="n")
-        self._a_pantalla(); self.pintar(avisar=False)
+        self.lbl = tk.Label(self, text="", font=self.FB, bg="white", fg="#B00020", justify="left", anchor="w"); self.lbl.pack(fill="x", padx=10, pady=6)
+        self._a_pantalla(); self._opcionales(); self.pintar(avisar=False)
 
     # ----- casillas
     def _entrada(self, padre, var, ancho, lado="w"):
@@ -270,19 +314,63 @@ class CosteoWin(tk.Toplevel):
 
     def _fila(self):
         r = len(self.filas) + 1; f = {}
-        for c, (k, t, w, entra) in enumerate(self.COLS):
+        for c, (k, t, w, entra, op) in enumerate(self.COLS):
             f[k] = tk.StringVar()
             if k in ("prod", "suplidor"):
-                x = ttk.Combobox(self.tab, textvariable=f[k], width=w, font=self.F, values=self.prods if k == "prod" else [])
+                x = ttk.Combobox(self.tab, textvariable=f[k], width=w, font=self.F, values=self.prods if k == "prod" else [],
+                                 style="Ancho.TCombobox" if k == "prod" else "TCombobox")
+                if k == "prod":
+                    x.configure(postcommand=lambda x=x: x.configure(values=self.prods))
+                    x.bind("<FocusIn>", lambda ev, f=f: setattr(self, "fila_prod", f))
                 x.bind("<<ComboboxSelected>>", lambda ev: self.pintar(avisar=False)); x.bind("<FocusOut>", lambda ev: self.pintar(avisar=False))
-                if k == "suplidor": x.configure(postcommand=lambda x=x: x.configure(values=self._nombres()))
+                if k == "suplidor": x.configure(state="readonly", postcommand=lambda x=x: x.configure(values=[""] + self._nombres()))
             elif entra:
                 x = self._entrada(self.tab, f[k], w, "e")
             else:
                 x = tk.Label(self.tab, textvariable=f[k], font=self.FB if k == "costo" else self.F, anchor="e", width=w, padx=3,
                              bg=self.CLARO if k == "costo" else "white", fg="#1F6F43" if k in ("b30", "b35", "b40", "b50", "venta") else self.TXT)
             x.grid(row=r, column=c, sticky="nsew", padx=(0, 1), pady=(0, 1))
+            if op:
+                self.extra.append(x)
+                if not self.ver_mas.get(): x.grid_remove()
         self.filas.append(f)
+
+    def producto_nuevo(self, descr="", fila=None):
+        """Crea en Diana un producto que no existe y lo pone en la fila donde se estaba escribiendo."""
+        top = tk.Toplevel(self); top.title("Producto nuevo"); top.transient(self); top.grab_set()
+        vs = {}
+        for i, (k, lab, val) in enumerate((("code", "Código", ""), ("descr", "Descripción", descr), ("price", "Precio de venta (puede dejarlo vacío)", ""))):
+            ttk.Label(top, text=lab).grid(row=i, column=0, sticky="e", padx=6, pady=4)
+            vs[k] = tk.StringVar(value=val); ttk.Entry(top, textvariable=vs[k], width=46).grid(row=i, column=1, padx=6, pady=4)
+        hecho = {}
+        def ok():
+            code, des = vs["code"].get().strip(), vs["descr"].get().strip()
+            if not code or not des:
+                messagebox.showwarning("Producto nuevo", "Ponga el código y la descripción.", parent=top); return
+            if self.db.one("SELECT 1 FROM products WHERE code=?", (code,)):
+                messagebox.showwarning("Producto nuevo", "Ese código ya existe.", parent=top); return
+            try: precio = _n(vs["price"].get())
+            except ValueError:
+                messagebox.showwarning("Producto nuevo", "Revise el precio.", parent=top); return
+            self.db.save_product(dict(code=code, descr=des, price=precio, price2=0, cost=0, itbis=0, category="", active=1, stock_base=0))
+            hecho["t"] = f"{code} | {des}"; top.destroy()
+        b = ttk.Frame(top); b.grid(row=3, column=0, columnspan=2, pady=8)
+        ttk.Button(b, text="Crear", command=ok).pack(side="left", padx=6); ttk.Button(b, text="Cancelar", command=top.destroy).pack(side="left", padx=6)
+        top.wait_window()
+        if not hecho: return False
+        self.prods = [f"{p['code']} | {p['descr']}" for p in self.db.q("SELECT code, descr FROM products WHERE active=1 ORDER BY descr")]
+        f = fila or self.fila_prod
+        if f is None or (f is not fila and f["prod"].get().strip() and self.db.one("SELECT 1 FROM products WHERE code=?", (f["prod"].get().split(" | ")[0].strip(),))):
+            f = next((x for x in self.filas if not x["prod"].get().strip()), None)   # primera fila vacía
+        if f is None: self._fila(); f = self.filas[-1]
+        f["prod"].set(hecho["t"]); self.pintar(avisar=False)
+        try: self.app.refresh_all()
+        except Exception: pass
+        return True
+
+    def _opcionales(self):
+        for x in self.extra:
+            x.grid() if self.ver_mas.get() else x.grid_remove()
 
     def mas_filas(self):
         for _ in range(5): self._fila()
@@ -295,9 +383,11 @@ class CosteoWin(tk.Toplevel):
         d = self.d; g = lambda v: f"{v:.12g}" if v else ""
         f = d.get("fecha") or datetime.date.today().isoformat()
         self.v["fecha"].set(f"{f[8:10]}/{f[5:7]}/{f[:4]}"); self.v["nombre"].set(d.get("nombre", ""))
-        for k in ("tasa", "gestion", "flete_general", "margen"): self.v[k].set(g(d.get(k)))
+        for k in ("tasa", "tasa_euro", "gestion", "margen"): self.v[k].set(g(d.get(k)))
         for fila, s in zip(self.sups, d["suplidores"]):
-            fila[0].set(s["nombre"]); fila[1].set(g(s.get("flete"))); fila[2].set(g(s.get("flete_rd"))); fila[3].set(g(s.get("pagado_rd")))
+            mon = s.get("moneda") or "US$"; fl, fm = s.get("flete") or 0, s.get("flete_moneda") or mon
+            if not fl and s.get("flete_rd"): fl, fm = s["flete_rd"], "RD$"     # costeos guardados con el shipping en pesos
+            fila[0].set(s["nombre"]); fila[1].set(mon); fila[2].set(g(fl)); fila[3].set(fm if fl else "")
         for fila, l in zip(self.filas, d["lineas"]):
             fila["prod"].set(next((x for x in self.prods if x.split(" | ")[0] == l.get("code")), l.get("descr", "")))
             for k in ("precio", "qty", "desc", "arancel", "selectivo", "itbis"): fila[k].set(g(l.get(k)))
@@ -307,11 +397,19 @@ class CosteoWin(tk.Toplevel):
         d = self.d
         d["nombre"] = self.v["nombre"].get().strip()
         t = self.v["fecha"].get().strip().replace("-", "/").split("/")
-        if len(t) != 3: raise ValueError("La fecha va como dd/mm/aaaa.")
+        if len(t) != 3: raise ValueError("La fecha va como día/mes/año, por ejemplo 18/11/2026.")
         d["fecha"] = datetime.date(int(t[2]) if len(t[2]) == 4 else 2000 + int(t[2]), int(t[1]), int(t[0])).isoformat()
-        for k in ("tasa", "gestion", "flete_general", "margen"): d[k] = _n(self.v[k].get())
-        d["suplidores"] = [dict(nombre=s[0].get().strip(), flete=_n(s[1].get()), flete_rd=_n(s[2].get()), pagado_rd=_n(s[3].get()))
-                           for s in self.sups if s[0].get().strip()]
+        for k in ("tasa", "tasa_euro", "gestion", "margen"): d[k] = _n(self.v[k].get())
+        d["flete_general"] = 0.0
+        viejos = {s["nombre"]: s for s in d.get("suplidores", [])}
+        d["suplidores"] = []
+        for s in self.sups:
+            n = s[0].get().strip()
+            if not n: continue
+            if not s[1].get(): s[1].set("US$")
+            if _n(s[2].get()) and not s[3].get(): s[3].set(s[1].get())     # si no elige, el shipping va en la moneda de la factura
+            d["suplidores"].append(dict(nombre=n, moneda=s[1].get(), flete=_n(s[2].get()), flete_moneda=s[3].get() or s[1].get(),
+                                        flete_rd=0.0, pagado_rd=(viejos.get(n) or {}).get("pagado_rd") or 0))
         d["lineas"] = []; self.orden_filas = []
         for i, f in enumerate(self.filas):
             p = f["prod"].get().strip()
@@ -332,24 +430,24 @@ class CosteoWin(tk.Toplevel):
         try:
             self._de_pantalla()
             res = calcular(self.d) if self.d["lineas"] else None
-            aviso = "" if res or self.d["lineas"] else "Escriba en las casillas amarillas: productos, tasa, gestión y fletes."
+            aviso = "" if res or self.d["lineas"] else "Llene las casillas amarillas en orden: 1) tasas y gestión, 2) suplidores, 3) productos."
         except ValueError as e:
             res, aviso = None, str(e)
             if avisar: messagebox.showwarning("Costeo", aviso, parent=self)
         if res:
-            lin, T = res; tasa = self.d["tasa"]
+            lin, T = res
             for i, l in zip(self.orden_filas, lin):
-                f = self.filas[i]; c = l["costo"]
-                for k, v in (("bruto", l["qty"] * (l.get("precio") or 0)), ("g", l["g"]), ("unit", l["g"] / l["cant"]), ("costo", c),
+                f = self.filas[i]; c = l["costo"]; ts = l["tasa_s"]
+                for k, v in (("bruto", l["qty"] * l["precio_m"]), ("g", l["g"] / ts), ("unit", l["g"] / ts / l["cant"]), ("costo", c),
                              ("b30", c * 1.42), ("b35", c * 1.53), ("b40", c * 1.66), ("b50", c / 0.5), ("venta", l["venta"]),
                              ("origen", l["origen"]), ("local", l["local"])):
                     f[k].set(m2(v))
-            self.tot["t_merc"].set(m2(T["mercancia"])); self.tot["t_flete"].set(m2(T["fletes"]))
+            self.tot["t_merc"].set(m2(T["mercancia"])); self.tot["t_flete"].set(m2(T["fletes"])); self.tot["t_ges"].set(m2(T["gestion"]))
             self.tot["t_trib"].set(m2(T["arancel"] + T["selectivo"])); self.tot["t_itbis"].set(m2(T["itbis"])); self.tot["t_total"].set(m2(T["costo"]))
         txt = aviso
-        if self.ordenes: txt += ("\n" if txt else "") + f"Órdenes de compra creadas: {self.ordenes}"
-        elif self.cid: txt += ("\n" if txt else "") + "Pendiente: todavía no se han creado las órdenes de compra."
-        self.lbl.config(text=txt)
+        if self.ordenes: txt += ("   " if txt else "") + f"Órdenes de compra creadas: {self.ordenes}"
+        elif self.cid: txt += ("   " if txt else "") + "Pendiente: todavía no se han creado las órdenes de compra."
+        self.lbl.config(text=txt, fg="#B00020" if aviso and not res and self.d["lineas"] else self.TXT)
         return res
 
     # ----- acciones
@@ -362,6 +460,12 @@ class CosteoWin(tk.Toplevel):
     def ordenar(self):
         if self.ordenes:
             messagebox.showinfo("Costeo", f"Este costeo ya tiene sus órdenes de compra: {self.ordenes}.", parent=self); return
+        if self.pintar() is None: return
+        for i in list(self.orden_filas):          # productos escritos que todavía no existen en Diana: ofrecer crearlos
+            f = self.filas[i]; t = f["prod"].get().strip()
+            if t and not self.db.one("SELECT 1 FROM products WHERE code=?", (t.split(" | ")[0].strip(),)):
+                if not messagebox.askyesno("Costeo", f"El producto '{t}' no existe en Diana.\n¿Crearlo ahora?", parent=self): return
+                if not self.producto_nuevo(t, f): return
         if not self.guardar(): return
         try:
             nros = crear_ordenes(self.db, self.cid, self.d)
