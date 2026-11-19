@@ -392,7 +392,7 @@ def _facturas_rango(db, d1, d2):
 
 def _clase(db, r):
     from db import TIPOS
-    lab = {0: "Sin comprobante", 1: "Fact. Credito Fiscal", 2: "Fact. Consumidor Final", 14: "Fact. Regimenes Especiales",
+    lab = {0: "Ventas libres", 1: "Fact. Credito Fiscal", 2: "Fact. Consumidor Final", 14: "Fact. Regimenes Especiales",
            15: "Fact. Gubernamental", 16: "Fact. Exportaciones"}
     return lab.get(r["tipo"] if r["ncf"] else 0, "Factura")
 

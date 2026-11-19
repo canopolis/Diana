@@ -1030,7 +1030,7 @@ class ReportesContTab:
 CUENTAS_AUTO = {
     "cxc": ("Cuentas por cobrar", "1112"),
     "ventas_fiscal": ("Ventas con comprobante", "4000"),
-    "ventas_libres": ("Ventas libres (sin comprobante)", "4010"),
+    "ventas_libres": ("Ventas libres", "4010"),
     "itbis_pagar": ("ITBIS por pagar", "2040"),
     "costo": ("Costo de la mercancía vendida", "5000"),
     "inventario": ("Inventario", "1200"),

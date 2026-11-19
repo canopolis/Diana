@@ -58,6 +58,14 @@ class Contab:
     def preparar(self):
         """Crea las tablas de contabilidad si faltan (tambien despues de restaurar un respaldo)."""
         self.con.executescript(SCHEMA_GL)
+        # "Ventas sin comprobantes" pasa a llamarse "Ventas libres" (solo el nombre de la cuenta)
+        import re
+        pat = re.compile(r"ventas?\s*(libres?\s*)?\(?\s*sin\s+comprobantes?\s*\)?", re.I)
+        for tabla in ("gl_accounts", "gl_subs"):
+            for r in self.con.execute(f"SELECT id, name FROM {tabla} WHERE name LIKE '%sin comprobante%'").fetchall():
+                nuevo = pat.sub("Ventas libres", r[1] or "").strip()
+                if nuevo != r[1]:
+                    self.con.execute(f"UPDATE {tabla} SET name=? WHERE id=?", (nuevo, r[0]))
         self.con.commit()
 
     # ---------- configuracion ----------

@@ -196,7 +196,7 @@ CREATE INDEX IF NOT EXISTS ix_mov ON stock_moves(nro);
 
 # Tipos de comprobante (tipo_cf de Monica + los nuevos)
 TIPOS = {
-    0: ("Sin comprobante", "FACTURA"),
+    0: ("Ventas libres", "FACTURA"),
     1: ("Factura. Crédito fiscal", "FACTURA. CREDITO FISCAL"),
     2: ("Factura. Consumidor final", "FACTURA. CONSUMIDOR FINAL"),
     3: ("Nota de crédito", "NOTA DE CREDITO"),
