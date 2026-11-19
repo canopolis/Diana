@@ -66,6 +66,19 @@ class Contab:
                 nuevo = pat.sub("Ventas libres", r[1] or "").strip()
                 if nuevo != r[1]:
                     self.con.execute(f"UPDATE {tabla} SET name=? WHERE id=?", (nuevo, r[0]))
+        # Corrección única (a pedido): la compra de la orden 367 (asiento 13650) se pagó con TC internacional;
+        # el crédito de 286,705.00 pasa de 2034 Suplidores por pagar a 2033. No se crea ningún asiento nuevo.
+        if not self.db.cfg("gl_fix_o367"):
+            j = self.con.execute("SELECT id FROM gl_jv WHERE number=13650 AND ref='O:367' AND date='2026-11-18'").fetchone()
+            de = self.con.execute("SELECT id FROM gl_accounts WHERE code='2034'").fetchone()
+            a_ = self.con.execute("SELECT id FROM gl_accounts WHERE code='2033'").fetchone()
+            if j and de and a_:
+                n = self.con.execute("SELECT COUNT(*) FROM gl_lines WHERE jv_id=? AND account_id=? AND ABS(amount+286705.0)<0.005",
+                                     (j[0], de[0])).fetchone()[0]
+                if n == 1:
+                    self.con.execute("UPDATE gl_lines SET account_id=? WHERE jv_id=? AND account_id=? AND ABS(amount+286705.0)<0.005",
+                                     (a_[0], j[0], de[0]))
+                    self.db.set_cfg("gl_fix_o367", "1")
         self.con.commit()
 
     # ---------- configuracion ----------
