@@ -304,3 +304,56 @@ def generar_cotizacion(db, kind, nro, ruta):
 def fecha_corta(s):
     d = parse_date(s) if isinstance(s, str) else s
     return d.strftime("%d/%m/%Y") if d else ""
+
+
+def generar_recibo(db, nro, ruta, pid=None):
+    """Recibo de pago de la factura nro: una pagina por cada pago (o solo el pago pid)."""
+    inv = db.one("SELECT * FROM invoices WHERE nro=?", (nro,))
+    pagos = db.q("SELECT * FROM payments WHERE nro=? ORDER BY id", (nro,))
+    if not inv or not pagos:
+        return 0
+    ajuste = db.notes_adj().get(nro, 0)
+    c = canvas.Canvas(ruta, pagesize=letter)
+    c.setTitle(f"Recibo de pago factura {nro}")
+    acum = 0.0; hechas = 0
+    for pg in pagos:
+        acum = round(acum + pg["amount"], 2)
+        if pid is not None and pg["id"] != pid:
+            continue
+        pago = round(pg["amount"], 2)
+        saldo = max(0.0, round(inv["saldo_base"] - acum + ajuste, 2))
+        antes = max(0.0, round(inv["total"] - saldo - pago, 2))
+        c.setLineWidth(0.8)
+        p = P(c)
+        p.t(30, 30, db.cfg("emp_nombre"), TBI, 22)
+        for i, k in enumerate(("emp_l1", "emp_l2", "emp_l3", "emp_l4", "emp_l5")):
+            p.t(30, 53 + i * 11.7, db.cfg(k), TR, 10)
+        p.box(413, 64, 585, 121); p.line(414, 93, 586, 93)
+        p.t(499, 72, "RECIBO DE PAGO", HB, 12, "c"); p.t(499, 101, f"No. {pg['id']}", HB, 12, "c")
+        fp = parse_date(pg["date"]) or datetime.date.today()
+        p.t(585, 130, f"Sto. Domingo, {fp.day} de {MESES[fp.month-1]} de {fp.year}", TR, 10, "r")
+        y = 160
+        p.box(30, y, 585, y + 62)
+        p.t(40, y + 8, "Recibimos de:", TB, 10); p.t(120, y + 8, fit(inv["name"], TR, 11, 370), TR, 11)
+        p.t(575, y + 8, f"Cliente {inv['client']}", TR, 10, "r")
+        p.t(40, y + 26, "La suma de:", TB, 10); p.t(120, y + 26, fit(monto_letras(pago), TR, 10, 455), TR, 10)
+        p.t(40, y + 44, "Forma de pago:", TB, 10); p.t(120, y + 44, fit(pg["method"] or "", TR, 10, 280), TR, 10)
+        p.t(575, y + 42, "RD$ " + n2(pago), HB, 13, "r")
+        y = 240
+        p.box(30, y, 585, y + 40); p.line(30, y + 18, 585, y + 18)
+        cols = [(40, "l", "Factura"), (100, "l", "Fecha"), (170, "l", "Vence"), (310, "r", "Total factura"),
+                (395, "r", "Pagado antes"), (480, "r", "Este pago"), (578, "r", "Saldo pendiente")]
+        vals = (str(nro), fecha_corta(inv["date"]), fecha_corta(inv["due"]), n2(inv["total"]), n2(antes), n2(pago), n2(saldo))
+        for (x, a, t), v in zip(cols, vals):
+            p.t(x, y + 4, t, TB, 10, a); p.t(x, y + 24, v, TR, 10, a)
+        if saldo > 0.005:
+            nota = f"PAGO PARCIAL (ABONO). Queda un saldo pendiente de RD$ {n2(saldo)} en la factura {nro}."
+        else:
+            nota = f"PAGO TOTAL. La factura {nro} queda saldada."
+        p.t(40, y + 52, nota, TB, 10)
+        y = 360
+        p.line(60, y, 230, y); p.t(145, y + 4, "Recibido por", TR, 10, "c")
+        c.showPage(); hechas += 1
+    if hechas:
+        c.save()
+    return hechas

@@ -30,11 +30,11 @@ def _toplevel_centrado(self, *a, **k):
     self.after(1, lambda: _centrar(self))    # al abrir
     self.after(60, lambda: _centrar(self))   # otra vez cuando ya tiene su tamaño final
 tk.Toplevel.__init__ = _toplevel_centrado
-from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
+from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota, generar_recibo
 import reportes
 import costeo
 
-VERSION = "1.57"
+VERSION = "1.58"
 NOMBRE = "Diana"
 
 
@@ -1986,6 +1986,7 @@ class App:
         self.menu_v = tk.Menu(self.root, tearoff=0)
         for t, cmd in (("Editar", self.editar), ("Ver / descargar PDF", self.ver_pdf),
                        ("Marcar pagada", self.marcar_pagada),
+                       ("Recibo de pago", self.recibo_pago),
                        ("Marcar NO pagada (corregir)", self.marcar_no_pagada),
                        ("Asignar NCF", self.asignar_ncf), ("Nota de crédito", lambda: self.nota("NC")),
                        ("Nota de débito", lambda: self.nota("ND")), ("Eliminar (devuelve inventario)", self.eliminar)):
@@ -2249,6 +2250,20 @@ class App:
             asiento[0]["ref"] = f"PAGO:{pid}"
         self.gl_grabar(self.root, asiento)
         self.refresh_all()
+        if messagebox.askyesno("Recibo de pago", f"Pago registrado en la factura {n}.\n\n¿Emitir el recibo de pago?"):
+            self.recibo_pago(n, pid)
+
+    def recibo_pago(self, n=None, pid=None):
+        n = n if n is not None else self.sel_v()
+        if n is None: return
+        if not self.db.one("SELECT COUNT(*) FROM payments WHERE nro=?", (n,))[0]:
+            messagebox.showinfo("Recibo de pago", f"La factura {n} no tiene pagos registrados."); return
+        ruta = os.path.join(self.db.carpeta("F"), f"recibo_{n}_{pid}.pdf" if pid else f"recibo_{n}.pdf")
+        try:
+            generar_recibo(self.db, n, ruta, pid)
+        except PermissionError:
+            messagebox.showwarning("PDF", "Ese recibo está abierto. Ciérrelo y vuelva a intentar."); return
+        open_file(ruta)
 
     def anular_cobros(self, n):
         for p in self.db.q("SELECT id FROM payments WHERE nro=?", (n,)):
@@ -2700,6 +2715,7 @@ class App:
         self.mnu_x = tk.Menu(self.root, tearoff=0)
         self.mnu_x.add_command(label="Ver factura", command=lambda: self.cxc_do(self.ver_pdf_nro))
         self.mnu_x.add_command(label="Pagar", command=lambda: self.cxc_do(self.marcar_pagada))
+        self.mnu_x.add_command(label="Recibo de pago", command=lambda: self.cxc_do(self.recibo_pago))
         self.mnu_x.add_separator()
         self.mnu_x.add_command(label="Cancelar", command=lambda: self.mnu_x.unpost())
         self.tv_x.bind("<Button-3>", self.cxc_menu)
@@ -2773,12 +2789,17 @@ class App:
                                    f"Se quitan sus pagos y queda con saldo {m2(inv['total'])}.", parent=top):
                 (self.anular_cobros(n) and self.db.mark_unpaid(n)); self.refresh_all(); cargar()
         bf = ttk.Frame(top); bf.pack(fill="x", padx=10, pady=10)
+        def recibo():
+            n = sel()
+            if n is not None: self.recibo_pago(n)
         ttk.Button(bf, text="Ver factura", command=ver).pack(side="left", padx=3)
+        ttk.Button(bf, text="Recibo de pago", command=recibo).pack(side="left", padx=3)
         ttk.Button(bf, text="Marcar NO pagada (corregir)", command=reversar).pack(side="left", padx=3)
         ttk.Button(bf, text="Cerrar", command=top.destroy).pack(side="right", padx=3)
         tv.bind("<Double-1>", lambda e: ver())
         mnu = tk.Menu(top, tearoff=0)
         mnu.add_command(label="Ver factura", command=ver)
+        mnu.add_command(label="Recibo de pago", command=recibo)
         mnu.add_command(label="Marcar NO pagada (corregir)", command=reversar)
         mnu.add_separator()
         mnu.add_command(label="Cerrar", command=mnu.unpost)
