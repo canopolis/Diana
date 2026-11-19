@@ -215,6 +215,7 @@ class CosteoWin(tk.Toplevel):
     """Pantalla como la hoja de Excel, en tres pasos de arriba hacia abajo: 1) tasas y gestión, 2) suplidores con su
     moneda y su flete, 3) productos. Se escribe en las casillas amarillas y todo se calcula solo."""
     VERDE, CLARO, ENTRA, TXT = "#1F4E3D", "#EAF2EC", "#FFF9DB", "#26332C"
+    ROJO = "#F6B5B5"
     # (clave, título, ancho, se escribe, es de las columnas opcionales)
     COLS = [("suplidor", "Suplidor", 13, 1, 0), ("prod", "Producto", 46, 1, 0), ("precio", "Precio", 10, 1, 0),
             ("qty", "Cantidad", 9, 1, 0), ("bruto", "Precio\nbruto", 12, 0, 0), ("desc", "%\ndescuento", 11, 1, 0),
@@ -248,7 +249,7 @@ class CosteoWin(tk.Toplevel):
         for k, lab, w in (("fecha", "Fecha", 11), ("nombre", "Nombre de la compra", 30)):
             tk.Label(top, text=lab, font=self.FB, bg=self.VERDE, fg="white", padx=6).pack(side="left")
             self.v[k] = tk.StringVar(); self._entrada(top, self.v[k], w).pack(side="left", padx=(0, 12))
-        for t, c in (("Cerrar", self.destroy), ("Exportar a Excel", self.excel), ("Crear órdenes de compra", self.ordenar), ("Guardar", self.guardar)):
+        for t, c in (("Cerrar", self.destroy), ("Exportar a Excel", self.excel), ("Crear órdenes de compra", self.ordenar), ("Guardar", self.guardar_avisa)):
             ttk.Button(top, text=t, command=c).pack(side="right", padx=3)
         # ----- pasos 1 y 2, y el desglose (solo lectura)
         med = tk.Frame(self, bg="white"); med.pack(fill="x", padx=10)
@@ -302,7 +303,7 @@ class CosteoWin(tk.Toplevel):
             if op: self.extra.append(x)
         tk.Label(self.tab, text="Borrar\nfila", font=self.FB, bg=self.VERDE, fg="white", width=6, height=2, justify="center").grid(
             row=0, column=0, padx=(0, 1), pady=(0, 1), sticky="nsew")
-        self.filas = []
+        self.filas = []; self.marcos = {}
         for _ in range(max(self.FILAS, len(self.d["lineas"]))): self._fila()
         self.lbl = tk.Label(self, text="", font=self.FB, bg="white", fg="#B00020", justify="left", anchor="w", wraplength=1340); self.lbl.pack(fill="x", padx=10, pady=6)
         self._a_pantalla(); self._opcionales(); self.pintar(avisar=False)
@@ -313,6 +314,8 @@ class CosteoWin(tk.Toplevel):
                      justify="left" if lado == "w" else "right", highlightthickness=0)
         e.bind("<FocusOut>", lambda ev: self.pintar(avisar=False)); e.bind("<Return>", lambda ev: self.pintar(avisar=False))
         var.trace_add("write", self._vivo)
+        if not hasattr(self, "ent"): self.ent = {}
+        self.ent[str(var)] = e
         return e
 
     def _buscar(self, txt):
@@ -335,8 +338,10 @@ class CosteoWin(tk.Toplevel):
         for c, (k, t, w, entra, op) in enumerate(self.COLS):
             f[k] = tk.StringVar()
             if k in ("prod", "suplidor"):
-                x = ttk.Combobox(self.tab, textvariable=f[k], width=w, font=self.F, values=self.prods if k == "prod" else [],
+                marco = tk.Frame(self.tab, bg="white")
+                x = ttk.Combobox(marco, textvariable=f[k], width=w, font=self.F, values=self.prods if k == "prod" else [],
                                  style="Ancho.TCombobox" if k == "prod" else "TCombobox")
+                x.pack(fill="both", expand=True, padx=2, pady=2); self.marcos[str(f[k])] = marco
                 if k == "prod":
                     x.configure(postcommand=lambda x=x: x.configure(values=self._buscar(x.get())), state="disabled")
                     x.bind("<FocusIn>", lambda ev, f=f: setattr(self, "fila_prod", f))
@@ -350,7 +355,7 @@ class CosteoWin(tk.Toplevel):
             else:
                 x = tk.Label(self.tab, textvariable=f[k], font=self.FB if k == "costo" else self.F, anchor="e", width=w, padx=3,
                              bg=self.CLARO if k == "costo" else "white", fg="#1F6F43" if k in ("b30", "b35", "b40", "b50", "venta") else self.TXT)
-            x.grid(row=r, column=c + 1, sticky="nsew", padx=(0, 1), pady=(0, 1))
+            (x.master if k in ("prod", "suplidor") else x).grid(row=r, column=c + 1, sticky="nsew", padx=(0, 1), pady=(0, 1))
             if op:
                 self.extra.append(x)
                 if not self.ver_mas.get(): x.grid_remove()
@@ -470,31 +475,31 @@ class CosteoWin(tk.Toplevel):
 
     def _faltan(self):
         """Lista, en palabras, de las casillas que faltan por llenar. Vacía = todo está lleno."""
-        F = []
+        F = []; R = self._rojos = set()
         usados = [(n[0].get().strip(), n[1].get() or "US$", (n[3].get() or n[1].get() or "US$") if n[2].get().strip() else None)
                   for n in self.sups if n[0].get().strip()]
         nombres = [u[0] for u in usados]
         mon = {m for u in usados for m in u[1:] if m}
         try: td, te = _n(self.v["tasa"].get()), _n(self.v["tasa_euro"].get())
         except ValueError: td = te = 0
-        if "US$" in mon and td <= 0: F.append("Paso 1: Tasa del dólar")
-        if "EURO" in mon and te <= 0: F.append("Paso 1: Tasa del euro")
-        if not nombres: F.append("Paso 2: escriba al menos un suplidor")
+        if "US$" in mon and td <= 0: F.append("Paso 1: Tasa del dólar"); R.add(str(self.v["tasa"]))
+        if "EURO" in mon and te <= 0: F.append("Paso 1: Tasa del euro"); R.add(str(self.v["tasa_euro"]))
+        if not nombres: F.append("Paso 2: escriba al menos un suplidor"); R.add(str(self.sups[0][0]))
         completas = set(); alguna = False
         for i, f in enumerate(self.filas):
             if not any(f[k].get().strip() for k in self.ESCRITAS): continue
             alguna = True; fa = []
             sp = f["suplidor"].get().strip()
-            if not sp: fa.append("Suplidor")
-            elif sp not in nombres: fa.append("Suplidor (ese nombre ya no está en el paso 2)")
-            if not f["prod"].get().strip(): fa.append("Producto")
-            if not f["precio"].get().strip(): fa.append("Precio")
+            if not sp: fa.append("Suplidor"); R.add(str(f["suplidor"]))
+            elif sp not in nombres: fa.append("Suplidor (ese nombre ya no está en el paso 2)"); R.add(str(f["suplidor"]))
+            if not f["prod"].get().strip(): fa.append("Producto"); R.add(str(f["prod"]))
+            if not f["precio"].get().strip(): fa.append("Precio"); R.add(str(f["precio"]))
             try: q = _n(f["qty"].get())
             except ValueError: q = 0
-            if q <= 0: fa.append("Cantidad")
+            if q <= 0: fa.append("Cantidad"); R.add(str(f["qty"]))
             if fa: F.append(f"Fila {i + 1}: " + ", ".join(fa))
             else: completas.add(i)
-        if not alguna: F.append("Paso 3: llene al menos un producto")
+        if not alguna: F.append("Paso 3: llene al menos un producto"); R.add(str(self.filas[0]["suplidor"]))
         return F, completas
 
     def pintar(self, avisar=True):
@@ -510,6 +515,8 @@ class CosteoWin(tk.Toplevel):
         for v in self.tot.values(): v.set("")
         res = None; mal = ""
         faltan, completas = self._faltan()
+        for n, e in self.ent.items(): e.configure(bg=self.ROJO if n in self._rojos else self.ENTRA)
+        for n, m in self.marcos.items(): m.configure(bg="#D32F2F" if n in self._rojos else "white")
         try:
             self._de_pantalla()
             pares = [(i, l) for i, l in zip(self.orden_filas, self.d["lineas"]) if i in completas]
@@ -543,6 +550,10 @@ class CosteoWin(tk.Toplevel):
         return res if listo else None
 
     # ----- acciones
+    def guardar_avisa(self):
+        if self.guardar():
+            messagebox.showinfo("Costeo", "El costeo fue guardado.", parent=self)
+
     def guardar(self, callar=False):
         if self.pintar() is None: return False
         self.cid = guardar(self.db, self.cid, self.d)
@@ -594,7 +605,24 @@ class ListaCosteos(tk.Toplevel):
         for t, c in (("Nuevo", self.nuevo), ("Abrir", self.abrir), ("Eliminar", self.borrar), ("Cerrar", self.destroy)):
             ttk.Button(b, text=t, command=c).pack(side="left", padx=4)
         self.tv.bind("<Double-1>", lambda e: self.abrir())
+        self.mnu = tk.Menu(self, tearoff=0)
+        for t, c in (("Abrir", self.abrir), ("Nuevo", self.nuevo), ("Eliminar", self.borrar)):
+            self.mnu.add_command(label=t, command=c)
+        self.mnu.add_separator(); self.mnu.add_command(label="Cerrar", command=self.mnu.unpost)
+        self.tv.bind("<Button-3>", self.menu)
         self.cargar()
+
+    def menu(self, ev):
+        fila = self.tv.identify_row(ev.y)
+        if fila:
+            self.tv.selection_set(fila); self.tv.focus(fila)
+        for t in ("Abrir", "Eliminar"):
+            self.mnu.entryconfigure(t, state="normal" if fila else "disabled")
+        try:
+            self.mnu.tk_popup(ev.x_root, ev.y_root)
+        finally:
+            self.mnu.grab_release()
+        return "break"
 
     def cargar(self):
         self.tv.delete(*self.tv.get_children())
