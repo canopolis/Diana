@@ -33,7 +33,7 @@ tk.Toplevel.__init__ = _toplevel_centrado
 from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, generar_nota
 import reportes
 
-VERSION = "1.52"
+VERSION = "1.53"
 NOMBRE = "Diana"
 
 
@@ -1063,10 +1063,12 @@ class DocTab:
                                           f"Compra recibida orden {n} {quien_compra(h2['name'], h2['seller'])}".strip(), fecha,
                                           "compra", montos_doc([dict(x) for x in ls2], h2["discount"] or 0))
                 if asiento is None: return
+                self.db.costo_ficha_por_compra(n, True)   # costo promedio en la ficha (antes de sumar las cantidades)
                 self.db.set_odoc("O", n, status=nuevo); self.app.gl_grabar(self.app.root, asiento)
                 self.app.pagadas_directo([n])
             else:
                 if not self.app.gl_anular(f"O:{n}", f"Orden {n} vuelve a pendiente"): return
+                self.db.costo_ficha_por_compra(n, False)
                 self.db.set_odoc("O", n, status=nuevo)
             self.app.refresh_all()
 

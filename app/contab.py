@@ -92,7 +92,86 @@ class Contab:
                     self.con.execute("UPDATE gl_lines SET account_id=? WHERE jv_id=? AND account_id=? AND ABS(amount+59551.0)<0.005",
                                      (a_[0], j[0], de[0]))
                     self.db.set_cfg("gl_fix_o367_local", "1")
+        # Tercera corrección única (a pedido): compras del 18/11/2026 (órdenes 365 Linvet, 366 Reliq y 367 KVP).
+        # Costos según la hoja de costos (cada flete a su suplidor), asientos con lo realmente pagado por cada cuenta,
+        # fichas con costo promedio y se eliminan los tres asientos de ajuste que dejan de hacer falta.
+        # Solo se aplica si TODO está exactamente como se revisó; si algo cambió, no hace nada.
+        if not self.db.cfg("gl_fix_compras_1811"):
+            try:
+                self._fix_compras_1811()
+            except Exception:
+                self.con.rollback()
         self.con.commit()
+
+    def _fix_compras_1811(self):
+        q = self.con.execute
+        def _id(code):
+            r = q("SELECT id FROM gl_accounts WHERE code=?", (code,)).fetchone()
+            return r[0] if r else None
+        def _jv(num, ref):
+            r = (q("SELECT id FROM gl_jv WHERE number=? AND date='2026-11-18' AND ref IS NULL", (num,)) if ref is None else
+                 q("SELECT id FROM gl_jv WHERE number=? AND date='2026-11-18' AND ref=?", (num, ref))).fetchone()
+            return r[0] if r else None
+        def _lin(jv):
+            return sorted((r[0], round(r[1], 2)) for r in q("SELECT account_id, amount FROM gl_lines WHERE jv_id=?", (jv,)))
+        inv, tc, mig, uxp, comp = _id("1200"), _id("2033"), _id("1006"), _id("3112"), _id("1113")
+        jk, jr, jl = _jv(13650, "O:367"), _jv(13651, "O:366"), _jv(13652, "O:365")
+        b1, b2, b3 = _jv(13653, None), _jv(13657, None), _jv(13661, None)
+        if None in (inv, tc, mig, uxp, comp, jk, jr, jl, b1, b2, b3): return
+        if not (_lin(jk) == sorted([(inv, 346256.0), (tc, -286705.0), (mig, -59551.0)]) and
+                _lin(jr) == sorted([(inv, 90043.56), (tc, -74238.6), (mig, -15804.96)]) and
+                _lin(jl) == sorted([(inv, 217101.9), (uxp, -178994.7), (mig, -38107.2)]) and
+                _lin(b1) == sorted([(comp, -182229.0), (uxp, 182229.0)]) and
+                _lin(b2) == sorted([(inv, -263280.18), (uxp, 263280.18)]) and
+                _lin(b3) == sorted([(inv, 5582.0), (tc, -5582.0)])): return
+        # código: (orden, cantidad, costo viejo en la orden, costo nuevo, costo local nuevo, costo viejo de la ficha)
+        NUEVO = {"A609-2": (365, 15, 14473.46, 14478.31, 2329.77, 0.0),
+                 "A603": (367, 100, 111.14, 103.17, 20.32, 96.0), "A604": (367, 400, 119.49, 110.92, 21.84, 103.0),
+                 "A605": (367, 400, 128.63, 122.85, 24.19, 114.0), "A606": (367, 400, 149.04, 138.35, 27.24, 128.0),
+                 "A607": (367, 400, 181.8, 168.77, 33.23, 156.0), "A608": (367, 200, 219.07, 203.36, 40.04, 188.0),
+                 "A609": (367, 200, 298.72, 277.3, 54.6, 257.0),
+                 "ML1GG": (366, 12, 2141.43, 2291.91, 391.43, 2230.94), "MLGTV1-1": (366, 30, 2144.88, 2291.91, 391.43, 2145.0)}
+        TOT = {365: (217101.9, 217174.65), 366: (90043.56, 96260.22), 367: (346256.0, 322805.0)}
+        for n, (viejo, _) in TOT.items():
+            o = q("SELECT total, status, deleted FROM odocs WHERE kind='O' AND nro=?", (n,)).fetchone()
+            if not o or o[2] or o[1] != "Recibida" or abs((o[0] or 0) - viejo) > 0.005: return
+            if q("SELECT COUNT(*) FROM olines WHERE kind='O' AND nro=?", (n,)).fetchone()[0] != sum(1 for v in NUEVO.values() if v[0] == n): return
+        for code, (n, cant, pv, pn, loc, cf) in NUEVO.items():
+            l = q("SELECT qty, price FROM olines WHERE kind='O' AND nro=? AND code=?", (n, code)).fetchall()
+            p = q("SELECT cost FROM products WHERE code=?", (code,)).fetchone()
+            if len(l) != 1 or abs(l[0][0] - cant) > 1e-9 or abs(l[0][1] - pv) > 0.005 or not p or abs((p[0] or 0) - cf) > 0.005: return
+        pagos = sorted((r[0], r[1], round(r[2], 2)) for r in q("SELECT id, nro, amount FROM ap_payments WHERE nro IN (365,366,367)"))
+        if pagos != [(59, 365, 217110.0), (60, 367, 90047.04), (61, 366, 399446.0), (62, 367, 256208.96)]: return
+        # --- 1) órdenes de compra: costos nuevos
+        for code, (n, cant, pv, pn, loc, cf) in NUEVO.items():
+            q("UPDATE olines SET price=?, cost_local=? WHERE kind='O' AND nro=? AND code=?", (pn, loc, n, code))
+        for n, (_, nuevo) in TOT.items():
+            q("UPDATE odocs SET subtotal=?, total=? WHERE kind='O' AND nro=?", (nuevo, nuevo, n))
+        # --- 2) asientos de compra: cada cuenta con lo que de verdad se pagó (no se crean asientos)
+        U = "UPDATE gl_lines SET amount=? WHERE jv_id=? AND account_id=?"
+        q(U, (322805.0, jk, inv)); q(U, (-259239.40, jk, tc)); q(U, (-63565.60, jk, mig))          # KVP: factura US$4,222.14
+        q(U, (96260.22, jr, inv)); q(U, (-79820.0, jr, tc)); q(U, (-16440.22, jr, mig))            # Reliq: factura US$1,300.00
+        q(U, (217174.65, jl, inv)); q(U, (-34946.61, jl, mig))                                     # Linvet: ya pagado desde la 1004
+        q("UPDATE gl_lines SET account_id=?, amount=? WHERE jv_id=? AND account_id=?", (comp, -182228.04, jl, uxp))
+        for jv, (_, nuevo) in ((jk, TOT[367]), (jr, TOT[366]), (jl, TOT[365])):
+            q("UPDATE gl_jv SET amount=? WHERE id=?", (nuevo, jv))
+        # --- 3) asientos que ya no hacen falta
+        for jv in (b1, b2, b3):
+            q("DELETE FROM gl_lines WHERE jv_id=?", (jv,)); q("DELETE FROM gl_jv WHERE id=?", (jv,))
+        # --- 4) pagos en Cuentas por pagar: cada orden pagada por su total
+        q("UPDATE ap_payments SET amount=217174.65 WHERE id=59")
+        q("UPDATE ap_payments SET amount=322805.0 WHERE id=60")
+        q("UPDATE ap_payments SET amount=96260.22 WHERE id=61")
+        q("DELETE FROM ap_payments WHERE id=62")
+        q("CREATE TABLE IF NOT EXISTS gl_ya_en_diario(ref TEXT PRIMARY KEY, fecha TEXT)")
+        q("DELETE FROM gl_ya_en_diario WHERE ref='APPAGO:62'")
+        # --- 5) fichas: costo promedio (lo que había al costo viejo + lo comprado al costo nuevo)
+        for code, (n, cant, pv, pn, loc, cf) in NUEVO.items():
+            hay = self.db.stock(code)
+            antes = hay - cant
+            costo = pn if antes <= 0.005 or cf <= 0 else round((antes * cf + cant * pn) / hay, 2)
+            q("UPDATE products SET cost=? WHERE code=?", (costo, code))
+        self.db.set_cfg("gl_fix_compras_1811", "1")
 
     # ---------- configuracion ----------
     def arranque(self):

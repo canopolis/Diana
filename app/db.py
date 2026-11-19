@@ -774,6 +774,26 @@ class DB:
         self._rebuild_odoc_moves(kind, nro)
         self.con.commit()
 
+    def costo_ficha_por_compra(self, nro, recibir=True):
+        """Costo promedio en la ficha del producto. Al recibir la orden: lo que había al costo de la ficha más lo
+        comprado al costo de la orden. Al devolverla a pendiente: lo deshace. Se llama ANTES de cambiar el estado."""
+        h = self.one("SELECT subtotal, discount FROM odocs WHERE kind='O' AND nro=?", (nro,))
+        if not h: return
+        f = 1 - (h["discount"] or 0) / h["subtotal"] if (h["subtotal"] or 0) > 0 else 1
+        for l in self.q("SELECT code, SUM(qty) q, SUM(qty*price) m FROM olines WHERE kind='O' AND nro=? GROUP BY code", (nro,)):
+            p = self.one("SELECT cost FROM products WHERE code=?", (l["code"],))
+            if not p or not l["code"] or (l["q"] or 0) <= 0: continue
+            cant, monto, cf, hay = l["q"], (l["m"] or 0) * f, p["cost"] or 0, self.stock(l["code"])
+            if recibir:
+                nuevo = monto / cant if hay <= 0.005 or cf <= 0 else (hay * cf + monto) / (hay + cant)
+            else:
+                antes = hay - cant
+                if antes <= 0.005: continue
+                nuevo = (hay * cf - monto) / antes
+                if nuevo <= 0: continue
+            self.con.execute("UPDATE products SET cost=? WHERE code=?", (round(nuevo, 2), l["code"]))
+        self.con.commit()
+
     def assign_odoc_ncf(self, kind, nro):
         tipo = 3 if kind == "NC" else 4
         ncf = self.take_ncf(tipo)
