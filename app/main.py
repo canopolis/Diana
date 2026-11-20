@@ -34,7 +34,7 @@ from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, ge
 import reportes
 import costeo
 
-VERSION = "1.64"
+VERSION = "1.65"
 NOMBRE = "Diana"
 
 

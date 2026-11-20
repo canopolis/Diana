@@ -102,6 +102,43 @@ class Contab:
             except Exception:
                 self.con.rollback()
         self.con.commit()
+        # Orden 365 (Linvet): las 15 piezas del A609-2 se separan en 12 del A609-2 y 3 del A609-3 nuevo, con los costos
+        # aprobados el 20/11/2026. El total de la orden no cambia. Solo se aplica si TODO está exactamente como se revisó.
+        if not self.db.cfg("gl_fix_linvet_a609"):
+            try:
+                self._fix_linvet_a609()
+            except Exception:
+                self.con.rollback()
+        self.con.commit()
+
+    def _fix_linvet_a609(self):
+        q = self.con.execute
+        ls = [tuple(r) for r in q("SELECT pos, code, qty, price, cost_local FROM olines WHERE kind='O' AND nro=365")]
+        if len(ls) != 1: return
+        pos, code, qty, price, loc = ls[0]
+        if code != "A609-2" or abs(qty - 15) > 1e-6 or abs(price - 14478.31) > 0.005 or abs((loc or 0) - 2329.77) > 0.005: return
+        h = q("SELECT total, status, deleted FROM odocs WHERE kind='O' AND nro=365").fetchone()
+        if not h or abs(h[0] - 217174.65) > 0.005 or h[1] != "Recibida" or h[2]: return
+        p = q("SELECT cost, stock_base, itbis, category FROM products WHERE code='A609-2'").fetchone()
+        if not p or abs((p[0] or 0) - 14478.31) > 0.005 or abs(p[1] or 0) > 1e-6: return
+        if q("SELECT 1 FROM products WHERE code='A609-3'").fetchone(): return
+        mv = [tuple(r) for r in q("SELECT nro, qty, kind FROM stock_moves WHERE code='A609-2'")]
+        if mv != [(365, 15.0, "O")]: return
+        if q("SELECT COUNT(*) FROM lines WHERE code IN ('A609-2','A609-3')").fetchone()[0]: return
+        if q("SELECT COUNT(*) FROM olines WHERE code IN ('A609-2','A609-3')").fetchone()[0] != 1: return
+        if q("SELECT COUNT(*) FROM stock_moves WHERE code='A609-3'").fetchone()[0]: return
+        if round(12 * 13063.14 + 3 * 20138.99, 2) != 217174.65: return
+        q("UPDATE olines SET qty=12, price=13063.14, cost_local=2102.04 WHERE kind='O' AND nro=365 AND pos=?", (pos,))
+        q("INSERT INTO olines(kind,nro,pos,code,descr,qty,price,cost,itbis,received,cost_local) "
+          "SELECT kind,nro,pos+1,'A609-3','Ajuste toracico quirurgico 3',3,20138.99,cost,itbis,received,3240.65 "
+          "FROM olines WHERE kind='O' AND nro=365 AND pos=?", (pos,))
+        q("UPDATE stock_moves SET qty=12 WHERE nro=365 AND code='A609-2' AND kind='O'")
+        q("INSERT INTO stock_moves(nro,code,qty,kind,date,cost) SELECT nro,'A609-3',3,kind,date,cost FROM stock_moves "
+          "WHERE nro=365 AND code='A609-2' AND kind='O'")
+        q("UPDATE products SET cost=13063.14 WHERE code='A609-2'")
+        q("INSERT INTO products(code,descr,price,price2,cost,stock_base,itbis,category,active,origin) "
+          "VALUES('A609-3','Ajuste toracico quirurgico 3',0,0,20138.99,0,?,?,1,'app')", (p[2] or 0, p[3] or ""))
+        self.db.set_cfg("gl_fix_linvet_a609", "1")
 
     def _fix_compras_1811(self):
         q = self.con.execute
