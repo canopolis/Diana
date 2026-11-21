@@ -110,6 +110,38 @@ class Contab:
             except Exception:
                 self.con.rollback()
         self.con.commit()
+        # Orden 365 (Linvet): a pedido (21/11/2026) se restauran los costos originales ya puestos aquí, sin pasar costo
+        # de un producto a otro: A609-2 a 10,341.65 y A609-3 a 31,024.95. El total de la orden y el asiento no cambian.
+        if self.db.cfg("gl_fix_linvet_a609") and not self.db.cfg("gl_fix_linvet_orig"):
+            try:
+                self._fix_linvet_orig()
+            except Exception:
+                self.con.rollback()
+        self.con.commit()
+        self.con.execute("CREATE TABLE IF NOT EXISTS cost_transfers(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, "
+                         "origen TEXT, monto REAL, detalle TEXT, jv_id INTEGER, reversada INTEGER DEFAULT 0)")
+        self.con.commit()
+
+    def _fix_linvet_orig(self):
+        q = self.con.execute
+        ls = sorted(tuple(r) for r in q("SELECT code, qty, price, cost_local FROM olines WHERE kind='O' AND nro=365"))
+        ok = [("A609-2", 12.0, 13063.14, 2102.04), ("A609-3", 3.0, 20138.99, 3240.65)]
+        if len(ls) != 2 or any(a[0] != b[0] or abs(a[1] - b[1]) > 1e-6 or abs(a[2] - b[2]) > 0.005
+                               or abs((a[3] or 0) - b[3]) > 0.005 for a, b in zip(ls, ok)): return
+        h = q("SELECT total, status, deleted FROM odocs WHERE kind='O' AND nro=365").fetchone()
+        if not h or abs(h[0] - 217174.65) > 0.005 or h[1] != "Recibida" or h[2]: return
+        for code, c in (("A609-2", 13063.14), ("A609-3", 20138.99)):
+            p = q("SELECT cost, stock_base FROM products WHERE code=?", (code,)).fetchone()
+            if not p or abs((p[0] or 0) - c) > 0.005 or abs(p[1] or 0) > 1e-6: return
+        if q("SELECT COUNT(*) FROM lines WHERE code IN ('A609-2','A609-3')").fetchone()[0]: return
+        mv = sorted(tuple(r) for r in q("SELECT code, nro, qty, kind FROM stock_moves WHERE code IN ('A609-2','A609-3')"))
+        if mv != [("A609-2", 365, 12.0, "O"), ("A609-3", 365, 3.0, "O")]: return
+        if round(12 * 10341.65 + 3 * 31024.95, 2) != 217174.65: return
+        for code, pr, loc in (("A609-2", 10341.65, 1664.12), ("A609-3", 31024.95, 4992.37)):
+            q("UPDATE olines SET price=?, cost_local=? WHERE kind='O' AND nro=365 AND code=?", (pr, loc, code))
+            q("UPDATE stock_moves SET cost=? WHERE kind='O' AND nro=365 AND code=?", (pr, code))
+            q("UPDATE products SET cost=? WHERE code=?", (pr, code))
+        self.db.set_cfg("gl_fix_linvet_orig", "1")
 
     def _fix_linvet_a609(self):
         q = self.con.execute

@@ -34,7 +34,7 @@ from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, ge
 import reportes
 import costeo
 
-VERSION = "1.65"
+VERSION = "1.66"
 NOMBRE = "Diana"
 
 
@@ -2410,6 +2410,8 @@ class App:
         ttk.Button(top, text="Ajustar existencia", command=self.ajustar).pack(side="left", padx=6)
         ttk.Button(top, text="Desactivar / activar", command=self.toggle_prod).pack(side="left")
         ttk.Button(top, text="Eliminar producto", command=self.eliminar_prod).pack(side="left", padx=6)
+        ttk.Button(top, text="Transferencia de costo", command=self.transferir_costo).pack(side="left", padx=6)
+        ttk.Button(top, text="Ver transferencias", command=self.ver_transferencias).pack(side="left")
         cols = ("Código", "Descripción", "Precio", "Precio 2", "Costo", "ITBIS %", "Existencia", "Estado")
         self.tv_p = ttk.Treeview(fr, columns=cols, show="headings")
         for c, w in zip(cols, (110, 380, 100, 100, 100, 70, 100, 90)):
@@ -2421,6 +2423,7 @@ class App:
         self.mnu_p.add_command(label="Ajustar existencia", command=self.ajustar)
         self.mnu_p.add_command(label="Desactivar / activar", command=self.toggle_prod)
         self.mnu_p.add_command(label="Eliminar producto", command=self.eliminar_prod)
+        self.mnu_p.add_command(label="Transferencia de costo", command=self.transferir_costo)
         self.mnu_p.add_separator()
         self.mnu_p.add_command(label="Cerrar", command=self.mnu_p.unpost)
         self.tv_p.bind("<Button-3>", self.prod_menu)
@@ -2498,6 +2501,180 @@ class App:
             asiento[0]["ref"] = f"AJ:{cur.lastrowid}"
         self.gl_grabar(self.root, asiento)
         self.load_productos()
+
+    # ----- Transferencia de costo -----
+    def _prods_con_existencia(self, excluir=()):
+        out = []
+        for p in self.db.q("SELECT code, descr, cost FROM products WHERE active=1 ORDER BY code"):
+            st = self.db.stock(p["code"])
+            if st > 0.005 and p["code"] not in excluir:
+                out.append((p["code"], p["descr"], m2(st), m2(p["cost"] or 0)))
+        return out
+
+    def transferir_costo(self):
+        """Baja el costo de un producto en existencia y lo reparte, en partes iguales por unidad, entre otros
+        productos en existencia. El valor total del inventario no cambia."""
+        inv = ui_contab.cta_auto(self.gl, "inventario")
+        if not inv:
+            messagebox.showwarning("Transferencia de costo", "Falta la cuenta de Inventario en Cuentas automáticas."); return
+        top = tk.Toplevel(self.root); top.title("Transferencia de costo"); top.transient(self.root); top.grab_set()
+        st = dict(origen=None, dest=[])
+        f1 = ttk.LabelFrame(top, text="Producto de origen (se le reduce el costo)"); f1.pack(fill="x", padx=10, pady=6)
+        lo = ttk.Label(f1, text="(ninguno)", width=80); lo.grid(row=0, column=0, columnspan=4, sticky="w", padx=6, pady=3)
+        def elegir_origen():
+            pk = Picker(top, "Producto de origen", ("Código", "Descripción", "Existencia", "Costo"),
+                        self._prods_con_existencia([d for d in st["dest"]]), [110, 380, 90, 100])
+            if pk.result:
+                st["origen"] = pk.result[0]; refrescar()
+        ttk.Button(f1, text="Buscar", command=elegir_origen).grid(row=1, column=0, padx=6, pady=3, sticky="w")
+        v_u = tk.StringVar(); v_t = tk.StringVar(); bloq = [False]
+        ttk.Label(f1, text="Reducir por unidad RD$").grid(row=1, column=1, sticky="e")
+        ttk.Entry(f1, textvariable=v_u, width=14).grid(row=1, column=2, sticky="w", padx=4)
+        ttk.Label(f1, text="o en total RD$").grid(row=1, column=3, sticky="e")
+        ttk.Entry(f1, textvariable=v_t, width=14).grid(row=1, column=4, sticky="w", padx=4)
+        f2 = ttk.LabelFrame(top, text="Productos de destino (reciben el costo, repartido por unidad)"); f2.pack(fill="x", padx=10, pady=6)
+        def agregar():
+            ex = [st["origen"]] + st["dest"]
+            pk = Picker(top, "Producto de destino", ("Código", "Descripción", "Existencia", "Costo"),
+                        self._prods_con_existencia(ex), [110, 380, 90, 100])
+            if pk.result:
+                st["dest"].append(pk.result[0]); refrescar()
+        def quitar():
+            s_ = tv.selection()
+            if s_ and s_[0] in st["dest"]:
+                st["dest"].remove(s_[0]); refrescar()
+        ttk.Button(f2, text="Agregar producto", command=agregar).pack(side="left", padx=6, pady=3)
+        ttk.Button(f2, text="Quitar producto", command=quitar).pack(side="left", padx=6, pady=3)
+        cols = ("Código", "Descripción", "Existencia", "Costo antes", "Costo después", "Cambio total")
+        tv = ttk.Treeview(top, columns=cols, show="headings", height=10)
+        for c, w in zip(cols, (100, 330, 90, 110, 110, 120)):
+            tv.heading(c, text=c); tv.column(c, width=w, anchor="w" if c in ("Código", "Descripción") else "e")
+        tv.pack(fill="both", expand=True, padx=10)
+        aviso = ttk.Label(top, text="", foreground="red"); aviso.pack(padx=10, anchor="w")
+        def calcular():
+            """Devuelve (por_unidad, total, n_origen, [(code, qty, costo, suma_por_unidad)]) o un texto de error."""
+            o = st["origen"]
+            if not o: return "Elija el producto de origen."
+            no = self.db.stock(o)
+            p = self.db.one("SELECT cost FROM products WHERE code=?", (o,)); co = (p["cost"] or 0) if p else 0
+            try:
+                pu = num(v_u.get()); tot = num(v_t.get())
+            except ValueError:
+                return "Monto no válido."
+            if pu <= 0 and tot <= 0: return "Escriba el monto a reducir (por unidad o en total)."
+            if pu <= 0: pu = round(tot / no, 2)
+            tot = round(pu * no, 2)
+            if pu > co + 0.005: return f"No se puede reducir más que el costo del origen ({m2(co)})."
+            if not st["dest"]: return "Agregue al menos un producto de destino."
+            ds = [(c, self.db.stock(c), (self.db.one("SELECT cost FROM products WHERE code=?", (c,))["cost"] or 0)) for c in st["dest"]]
+            ud = sum(q for _, q, _ in ds)
+            if ud <= 0.005: return "Los productos de destino no tienen existencia."
+            return pu, tot, no, co, [(c, q, cd, tot / ud) for c, q, cd in ds]
+        def refrescar(*a):
+            if bloq[0]: return
+            tv.delete(*tv.get_children())
+            o = st["origen"]
+            if o:
+                p = self.db.one("SELECT descr, cost FROM products WHERE code=?", (o,))
+                lo.config(text=f"{o} - {p['descr']}   Existencia {m2(self.db.stock(o))}   Costo {m2(p['cost'] or 0)}")
+            r = calcular()
+            if isinstance(r, str):
+                aviso.config(text=r)
+                for c in st["dest"]:
+                    p = self.db.one("SELECT descr, cost FROM products WHERE code=?", (c,))
+                    tv.insert("", "end", iid=c, values=(c, p["descr"], m2(self.db.stock(c)), m2(p["cost"] or 0), "", ""))
+                return
+            pu, tot, no, co, ds = r
+            aviso.config(text=f"Se pasan RD$ {m2(tot)} en total. El valor del inventario no cambia.")
+            po = self.db.one("SELECT descr FROM products WHERE code=?", (o,))
+            tv.insert("", "end", iid="__o", values=(o, po["descr"] + "  (origen)", m2(no), m2(co), m2(co - pu), m2(-tot)))
+            for c, q, cd, add in ds:
+                p = self.db.one("SELECT descr FROM products WHERE code=?", (c,))
+                tv.insert("", "end", iid=c, values=(c, p["descr"], m2(q), m2(cd), m2(cd + add), m2(add * q)))
+        v_u.trace_add("write", lambda *a: (bloq.__setitem__(0, True), v_t.set("") if v_u.get().strip() else None,
+                                           bloq.__setitem__(0, False), refrescar()))
+        v_t.trace_add("write", lambda *a: (bloq.__setitem__(0, True), v_u.set("") if v_t.get().strip() else None,
+                                           bloq.__setitem__(0, False), refrescar()))
+        def aceptar():
+            r = calcular()
+            if isinstance(r, str):
+                messagebox.showwarning("Transferencia de costo", r, parent=top); return
+            pu, tot, no, co, ds = r
+            o = st["origen"]
+            nombres = ", ".join(c for c, *_ in ds)
+            if not messagebox.askyesno("Transferencia de costo",
+                                       f"¿Pasar RD$ {m2(tot)} de costo de {o} a {nombres}?\n\n"
+                                       f"{o} queda a {m2(co - pu)} por unidad.", parent=top):
+                return
+            hoy = datetime.date.today()
+            con = self.db.con
+            det = json.dumps(dict(origen=[o, no, pu], destinos=[[c, q, add] for c, q, cd, add in ds]))
+            tid = con.execute("INSERT INTO cost_transfers(date, origen, monto, detalle) VALUES(?,?,?,?)",
+                              (hoy.isoformat(), o, tot, det)).lastrowid
+            try:
+                descr = f"Transferencia de costo de {o} a {nombres} {hoy.strftime('%d/%m/%Y')}"
+                jid = self.gl.guardar_asiento(dict(date=hoy.isoformat(), descr=descr, ref=f"TC:{tid}"),
+                                              [dict(account_id=inv, amount=tot, name=f"Costo pasado a {nombres}"),
+                                               dict(account_id=inv, amount=-tot, name=f"Costo reducido a {o}")])
+            except Exception as e:
+                con.execute("DELETE FROM cost_transfers WHERE id=?", (tid,)); con.commit()
+                messagebox.showwarning("Transferencia de costo", f"No se pudo hacer el asiento:\n{e}", parent=top); return
+            con.execute("UPDATE products SET cost=? WHERE code=?", (round(co - pu, 2), o))
+            for c, q, cd, add in ds:
+                con.execute("UPDATE products SET cost=? WHERE code=?", (cd + add, c))
+            con.execute("UPDATE cost_transfers SET jv_id=? WHERE id=?", (jid, tid)); con.commit()
+            top.destroy(); self.load_productos()
+            messagebox.showinfo("Transferencia de costo", f"Listo. Se pasaron RD$ {m2(tot)} de {o} a {nombres}.")
+        bf = ttk.Frame(top); bf.pack(pady=8)
+        ttk.Button(bf, text="OK", command=aceptar).pack(side="left", padx=6)
+        ttk.Button(bf, text="Cancelar", command=top.destroy).pack(side="left", padx=6)
+        sel = self.sel_p()
+        if sel and self.db.stock(sel) > 0.005:
+            st["origen"] = sel
+        refrescar()
+
+    def ver_transferencias(self):
+        top = tk.Toplevel(self.root); top.title("Transferencias de costo"); top.transient(self.root); top.grab_set()
+        cols = ("Nro.", "Fecha", "Origen", "Monto", "Destinos", "Estado")
+        tv = ttk.Treeview(top, columns=cols, show="headings", height=14)
+        for c, w in zip(cols, (60, 90, 110, 110, 380, 100)):
+            tv.heading(c, text=c); tv.column(c, width=w, anchor="e" if c in ("Nro.", "Monto") else "w")
+        tv.pack(fill="both", expand=True, padx=10, pady=6)
+        def cargar():
+            tv.delete(*tv.get_children())
+            for r in self.db.q("SELECT * FROM cost_transfers ORDER BY id DESC"):
+                d = json.loads(r["detalle"])
+                tv.insert("", "end", iid=str(r["id"]), values=(r["id"], dmy(r["date"]), r["origen"], m2(r["monto"]),
+                          ", ".join(x[0] for x in d["destinos"]), "Reversada" if r["reversada"] else "Aplicada"))
+        def reversar():
+            s_ = tv.selection()
+            if not s_: return
+            r = self.db.one("SELECT * FROM cost_transfers WHERE id=?", (int(s_[0]),))
+            if r["reversada"]:
+                messagebox.showinfo("Transferencias de costo", "Esa transferencia ya está reversada.", parent=top); return
+            d = json.loads(r["detalle"]); o, no, pu = d["origen"]
+            if not messagebox.askyesno("Reversar", f"¿Reversar la transferencia {r['id']} de RD$ {m2(r['monto'])}?\n\n"
+                                       f"{o} vuelve a subir {m2(pu)} por unidad y los destinos bajan lo que recibieron.", parent=top):
+                return
+            con = self.db.con
+            for c, q, add in d["destinos"]:
+                p = self.db.one("SELECT cost FROM products WHERE code=?", (c,))
+                if p and (p["cost"] or 0) - add < -0.005:
+                    messagebox.showwarning("Reversar", f"{c} ya no tiene costo suficiente para reversar.", parent=top); return
+            hoy = datetime.date.today()
+            try:
+                self.gl.reversar_ref(f"TC:{r['id']}", hoy, f"Reverso transferencia de costo {r['id']} de {o} {hoy.strftime('%d/%m/%Y')}")
+            except Exception as e:
+                messagebox.showwarning("Reversar", f"No se pudo reversar el asiento:\n{e}", parent=top); return
+            con.execute("UPDATE products SET cost=cost+? WHERE code=?", (pu, o))
+            for c, q, add in d["destinos"]:
+                con.execute("UPDATE products SET cost=MAX(cost-?,0) WHERE code=?", (add, c))
+            con.execute("UPDATE cost_transfers SET reversada=1 WHERE id=?", (r["id"],)); con.commit()
+            cargar(); self.load_productos()
+        bf = ttk.Frame(top); bf.pack(pady=6)
+        ttk.Button(bf, text="Reversar", command=reversar).pack(side="left", padx=6)
+        ttk.Button(bf, text="Cerrar", command=top.destroy).pack(side="left", padx=6)
+        cargar()
 
     def eliminar_prod(self):
         code = self.sel_p()
