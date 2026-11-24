@@ -34,7 +34,7 @@ from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, ge
 import reportes
 import costeo
 
-VERSION = "1.67"
+VERSION = "1.68"
 NOMBRE = "Diana"
 
 
@@ -1201,6 +1201,10 @@ class App:
         loc = elegir_carpeta_inicial(self.root)
         self.db = DB(loc=loc)
         self.gl = Contab(self.db)
+        try:
+            self.renombrar_pdfs_viejos()
+        except Exception:
+            pass
         ui_contab.H.update(fecha_entry=fecha_entry, read_dmy=read_dmy, dmy=dmy, Picker=Picker,
                            open_file=open_file, form_dialog=form_dialog)
         self.root.deiconify()
@@ -1942,6 +1946,48 @@ class App:
         r = self.db.one("SELECT name, client FROM invoices WHERE nro=?", (nro,))
         quien = (r["name"] or r["client"] or "") if r else ""
         return os.path.join(self.db.carpeta("F"), nombre_archivo(f"{nombre_propio(quien)} factura número {nro}"))
+
+    def renombrar_pdfs_viejos(self):
+        """Una sola vez: los PDF guardados con los nombres viejos (fa_7297.pdf, guia_55.pdf, Estado_Cta_X_fecha.pdf...)
+        pasan a los nombres nuevos. No borra ni cambia el contenido; si el nombre nuevo ya existe le agrega (2), (3)..."""
+        import re
+        if self.db.cfg("pdf_nombres_1_67"):
+            return
+        def mover(carpeta, viejo, nuevo):
+            dst = os.path.join(carpeta, nuevo); i = 2
+            while os.path.exists(dst):
+                dst = os.path.join(carpeta, f"{nuevo[:-4]} ({i}).pdf"); i += 1
+            try:
+                os.rename(os.path.join(carpeta, viejo), dst)
+            except OSError:
+                pass   # abierto o sin permiso: se queda con su nombre
+        c = self.db.carpeta("F")
+        for f in os.listdir(c):
+            m = re.fullmatch(r"fa_(\d+)\.pdf", f, re.I)
+            if m:
+                mover(c, f, os.path.basename(self.pdf_path(int(m.group(1)))))
+        for kind, pref in (("Q", "es"), ("G", "guia"), ("O", "orden"), ("NC", "nc"), ("ND", "nd")):
+            c = self.db.carpeta(kind)
+            for f in os.listdir(c):
+                m = re.fullmatch(pref + r"_(\d+)\.pdf", f, re.I)
+                if m:
+                    mover(c, f, os.path.basename(self.doc_path(kind, int(m.group(1)))))
+        c = self.db.carpeta("R")
+        for f in os.listdir(c):
+            m = re.fullmatch(r"(Estado_Cta_Prov_|Estado_Cta_|Saldos_por_pagar|Saldos_vencidos)(.*?)_?(\d{4})(\d{2})(\d{2})_\d{6}\.pdf", f, re.I)
+            if not m:
+                continue
+            tipo, quien, fecha = m.group(1).lower(), m.group(2).strip("_"), f"{m.group(5)}-{m.group(4)}-{m.group(3)}"
+            if tipo.startswith("saldos_por"):
+                nuevo = f"Cuentas por pagar al {fecha}"
+            elif tipo.startswith("saldos_v"):
+                nuevo = f"Cuentas por cobrar al {fecha}"
+            elif quien.lower() == "todos":
+                nuevo = f"Todos los {'suplidores' if 'prov' in tipo else 'clientes'} estado de cuenta {fecha}"
+            else:
+                nuevo = f"{self.nombre_cliente(quien)} estado de cuenta {fecha}"
+            mover(c, f, nombre_archivo(nuevo))
+        self.db.set_cfg("pdf_nombres_1_67", "1")
 
     def nombre_cliente(self, code):
         r = self.db.one("SELECT name FROM clients WHERE code=?", (code,))
