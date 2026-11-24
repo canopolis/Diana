@@ -34,7 +34,7 @@ from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, ge
 import reportes
 import costeo
 
-VERSION = "1.66"
+VERSION = "1.67"
 NOMBRE = "Diana"
 
 
@@ -139,6 +139,27 @@ DIAS = {"15 Días": 15, "30 Días": 30, "45 Días": 45, "60 Días": 60, "Credito
 
 
 # ---------------- utilidades ----------------
+def nombre_propio(t):
+    """Nombres con la primera letra en mayúscula y el resto en minúscula, cuando vienen todo en mayúsculas o
+    todo en minúsculas (si ya vienen mezclados se respetan)."""
+    t = " ".join((t or "").split())
+    if t and (t.isupper() or t.islower()):
+        t = " ".join(w[:1].upper() + w[1:].lower() for w in t.split(" "))
+    return t
+
+
+def nombre_archivo(base):
+    """Nombre de archivo válido en Windows: sin los caracteres que Windows no acepta."""
+    for c in '\\/:*?"<>|':
+        base = base.replace(c, "-")
+    base = " ".join(base.split()).strip(" .") or "documento"
+    return base[:150] + ".pdf"
+
+
+def hoy_dmy():
+    return datetime.date.today().strftime("%d-%m-%Y")
+
+
 def dmy(s):
     d = parse_date(s) if isinstance(s, str) else s
     return d.strftime("%d/%m/%Y") if d else ""
@@ -1912,11 +1933,19 @@ class App:
         return ui_contab.anular_documento(parent or self.root, self.gl, ref, descr)
 
     def doc_path(self, kind, nro):
-        pref = {"Q": "es", "G": "guia", "O": "orden", "NC": "nc", "ND": "nd"}[kind]
-        return os.path.join(self.db.carpeta(kind), f"{pref}_{nro}.pdf")
+        tipo = {"Q": "cotización", "G": "conduce", "O": "orden de compra", "NC": "nota de crédito", "ND": "nota de débito"}[kind]
+        r = self.db.one("SELECT name, client FROM odocs WHERE kind=? AND nro=?", (kind, nro))
+        quien = (r["name"] or r["client"] or "") if r else ""
+        return os.path.join(self.db.carpeta(kind), nombre_archivo(f"{nombre_propio(quien)} {tipo} {nro}"))
 
     def pdf_path(self, nro):
-        return os.path.join(self.db.carpeta("F"), f"fa_{nro}.pdf")
+        r = self.db.one("SELECT name, client FROM invoices WHERE nro=?", (nro,))
+        quien = (r["name"] or r["client"] or "") if r else ""
+        return os.path.join(self.db.carpeta("F"), nombre_archivo(f"{nombre_propio(quien)} factura número {nro}"))
+
+    def nombre_cliente(self, code):
+        r = self.db.one("SELECT name FROM clients WHERE code=?", (code,))
+        return nombre_propio((r["name"] if r else "") or code)
 
     def refresh_all(self):
         if not getattr(self, "_en_directo", False):   # facturas cobradas directo en su asiento: nunca quedan pendientes de cobro
@@ -2076,7 +2105,7 @@ class App:
                            "(se aceptan E31, E32, E44, E45 y E46). Las notas de crédito y débito se registran a mano.")
         if not g["items"]: errores.append("No se encontraron productos en el PDF.")
         # cliente: por RNC; si no trae RNC (consumidor final), por nombre
-        cl = None
+        cl = None; consumidor = False
         if g["rnc"]:
             mismos = [c for c in self.db.q("SELECT * FROM clients WHERE COALESCE(ctype,'C')='C' AND COALESCE(active,1)=1 ORDER BY name, code")
                       if "".join(ch for ch in (c["rnc"] or "") if ch.isdigit()) == g["rnc"]]
@@ -2105,6 +2134,7 @@ class App:
             else:
                 cl = indep
                 if cl is None: errores.append("No existe el cliente independiente en el programa.")
+                consumidor = True
         lines = []
         for it in g["items"]:
             # el codigo debe ser identico al del inventario (sin importar mayusculas/minusculas); el nombre puede variar
@@ -2131,6 +2161,12 @@ class App:
             return
         nro = self.db.next_invoice_no()   # siempre el numero que corresponde en el programa
         b = self.db.client_print_block(cl["code"])
+        if consumidor:
+            # consumidor final: la factura lleva el nombre que trae la GTI, nunca el de la ficha del cliente independiente
+            nom_gti = (g["cliente_nombre"] or "").strip()
+            if not nom_gti or nom_gti.endswith(":") or nom_gti.upper().startswith(("RNC", "CÉDULA", "CEDULA", "TELÉFONO", "TELEFONO", "DIRECCIÓN", "DIRECCION")):
+                nom_gti = "Consumidor final"
+            b = dict(b, name="Consumidor final" if nom_gti.lower() == "consumidor final" else nombre_propio(nom_gti), dir1="", dir2="", dir3="", rnc="")
         dias = (g["vence"] - g["fecha"]).days if g["vence"] and g["fecha"] else 0
         terms = "Efectivo" if dias <= 0 else next((t for t, n in DIAS.items() if n == dias and t != "Credito"), "Credito")
         h = dict(nro=nro, date=fmt_date(g["fecha"] or datetime.date.today()), due=fmt_date(g["vence"] or g["fecha"]),
@@ -2839,13 +2875,13 @@ class App:
             messagebox.showwarning("Fechas", str(e)); return
         code = self.pc.get().strip()
         provs = [code] if code else sorted({o["client"] for o, _ in self.db.open_payables()})
-        ruta = self.rep_path(f"Estado_Cta_Prov_{code or 'todos'}")
+        ruta = self.rep_path(f"{self.nombre_cliente(code) if code else 'Todos los suplidores'} estado de cuenta {hoy_dmy()}", fijo=True)
         reportes.estado_cuenta(self.db, provs, d1, d2, ruta, ap=True); open_file(ruta)
 
     def pdf_saldos_p(self):
         first = self.db.one("SELECT MIN(date) FROM ap_ledger")[0] or fmt_date(datetime.date.today())
         hoy = datetime.date.today()
-        ruta = self.rep_path("Saldos_por_pagar")
+        ruta = self.rep_path(f"Cuentas por pagar al {hoy_dmy()}", fijo=True)
         reportes.saldos_vencidos(self.db, parse_date(first), hoy, hoy, ruta, ap=True); open_file(ruta)
 
     # ----- Cuentas por cobrar -----
@@ -3006,9 +3042,11 @@ class App:
             messagebox.showwarning("PDF", "Ese PDF está abierto. Ciérrelo y vuelva a intentar."); return
         open_file(ruta)
 
-    def rep_path(self, nombre):
+    def rep_path(self, nombre, fijo=False):
         d = self.db.carpeta("R")
         base = nombre[:-4] if nombre.lower().endswith(".pdf") else nombre
+        if fijo:
+            return os.path.join(d, nombre_archivo(base))
         return os.path.join(d, f"{base}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
 
     def pdf_estado(self):
@@ -3023,7 +3061,7 @@ class App:
             if not messagebox.askyesno("Estado de cuenta", "No eligió cliente.\n¿Hacer el estado de cuenta de todos los clientes con balance?"):
                 return
             clientes = sorted({inv["client"] for inv, _ in self.db.open_invoices()})
-        ruta = self.rep_path(f"Estado_Cta_{code}" if code else "Estado_Cta_todos")
+        ruta = self.rep_path(f"{self.nombre_cliente(code) if code else 'Todos los clientes'} estado de cuenta {hoy_dmy()}", fijo=True)
         try:
             ruta, hechos, fallos = reportes.estado_cuenta(self.db, clientes, d1, d2, ruta)
         except Exception as e:
@@ -3042,7 +3080,7 @@ class App:
             d2 = al   # "hasta" es la misma fecha "al"
         except ValueError as e:
             messagebox.showwarning("Fechas", str(e)); return
-        ruta = self.rep_path("Saldos_vencidos")
+        ruta = self.rep_path(f"Cuentas por cobrar al {al.strftime('%d-%m-%Y')}", fijo=True)
         reportes.saldos_vencidos(self.db, d1, d2, al, ruta); open_file(ruta)
 
     # ----- Reportes -----
