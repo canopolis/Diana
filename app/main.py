@@ -34,7 +34,7 @@ from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, ge
 import reportes
 import costeo
 
-VERSION = "1.68"
+VERSION = "1.69"
 NOMBRE = "Diana"
 
 
@@ -139,6 +139,12 @@ DIAS = {"15 Días": 15, "30 Días": 30, "45 Días": 45, "60 Días": 60, "Credito
 
 
 # ---------------- utilidades ----------------
+def sin_tildes(t):
+    import unicodedata
+    t = unicodedata.normalize("NFD", (t or "").lower())
+    return " ".join("".join(ch for ch in t if unicodedata.category(ch) != "Mn").split())
+
+
 def nombre_propio(t):
     """Nombres con la primera letra en mayúscula y el resto en minúscula, cuando vienen todo en mayúsculas o
     todo en minúsculas (si ya vienen mezclados se respetan)."""
@@ -2167,17 +2173,44 @@ class App:
             else:
                 errores.append(f"No hay cliente con RNC {g['rnc']} ({g['cliente_nombre']}).")
         else:
-            # sin RNC: cliente independiente (consumidor final)
+            # sin RNC: si la GTI trae el nombre de un cliente (p. ej. un cliente con RNC que compra con factura de
+            # consumidor final E32), se propone ese cliente; si dice "Consumidor final" o no trae nombre, va al independiente
             indep = self.db.one("SELECT * FROM clients WHERE code='CLIENTE'") or \
                 self.db.one("SELECT * FROM clients WHERE upper(name) LIKE '%INDEPENDIENTE%' ORDER BY code")
-            nom = g["cliente_nombre"] or "consumidor final"
-            if messagebox.askyesno("Facturación rápida", f"La factura es de un cliente independiente ({nom}).\n\n"
-                                   "¿Asignar esta factura a otro cliente?"):
-                rows = [(c["code"], c["name"]) for c in self.db.q("SELECT code,name FROM clients WHERE COALESCE(ctype,'C')='C' AND COALESCE(active,1)=1 ORDER BY name")]
-                p = Picker(self.root, "Elija el cliente para esta factura", ("Código", "Cliente"), rows, [120, 560])
-                if not p.result: return
-                cl = self.db.one("SELECT * FROM clients WHERE code=?", (p.result[0],))
-            else:
+            nom = (g["cliente_nombre"] or "").strip()
+            if nom.endswith(":") or nom.upper().startswith(("RNC", "CÉDULA", "CEDULA", "TELÉFONO", "TELEFONO", "DIRECCIÓN", "DIRECCION")):
+                nom = ""
+            todos = [c for c in self.db.q("SELECT * FROM clients WHERE COALESCE(ctype,'C')='C' AND COALESCE(active,1)=1 ORDER BY name, code")]
+            def elegir(titulo):
+                rows = [(c["code"], c["name"], c["rnc"] or "") for c in todos]
+                p = Picker(self.root, titulo, ("Código", "Cliente", "RNC"), rows, [110, 450, 140])
+                return self.db.one("SELECT * FROM clients WHERE code=?", (p.result[0],)) if p.result else None
+            es_cf = not nom or sin_tildes(nom) == "consumidor final"
+            if not es_cf:
+                iguales = [c for c in todos if sin_tildes(c["name"]) == sin_tildes(nom)
+                           and not (indep and c["code"] == indep["code"])]
+                if not iguales:   # nombre parecido: uno contiene al otro (p. ej. "Reino Animal" y "Reino Animal SRL")
+                    n0 = sin_tildes(nom)
+                    iguales = [c for c in todos if c["name"] and (n0 in sin_tildes(c["name"]) or sin_tildes(c["name"]) in n0)
+                               and len(sin_tildes(c["name"])) >= 4 and not (indep and c["code"] == indep["code"])]
+                if len(iguales) == 1 and messagebox.askyesno(
+                        "Facturación rápida", f"La GTI trae el cliente \"{nom}\" sin RNC.\n\n"
+                        f"¿Es {iguales[0]['name']} (código {iguales[0]['code']})?"):
+                    cl = iguales[0]
+                elif len(iguales) > 1:
+                    cl = elegir(f"Hay varios clientes \"{nom}\": ¿a cuál corresponde esta factura?")
+                    if cl is None: return
+                if cl is None:
+                    r = messagebox.askyesnocancel("Facturación rápida", f"La GTI trae el cliente \"{nom}\" sin RNC.\n\n"
+                                                  "Sí = elegir el cliente de la lista\nNo = dejarla como consumidor final")
+                    if r is None: return
+                    if r:
+                        cl = elegir(f"Elija el cliente para la factura de \"{nom}\"")
+                        if cl is None: return
+            elif messagebox.askyesno("Facturación rápida", "La factura es de consumidor final.\n\n¿Asignar esta factura a un cliente?"):
+                cl = elegir("Elija el cliente para esta factura")
+                if cl is None: return
+            if cl is None:
                 cl = indep
                 if cl is None: errores.append("No existe el cliente independiente en el programa.")
                 consumidor = True
