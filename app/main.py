@@ -34,7 +34,7 @@ from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, ge
 import reportes
 import costeo
 
-VERSION = "1.70"
+VERSION = "1.71"
 NOMBRE = "Diana"
 
 
@@ -1957,7 +1957,7 @@ class App:
         """Una sola vez: los PDF guardados con los nombres viejos (fa_7297.pdf, guia_55.pdf, Estado_Cta_X_fecha.pdf...)
         pasan a los nombres nuevos. No borra ni cambia el contenido; si el nombre nuevo ya existe le agrega (2), (3)..."""
         import re
-        if self.db.cfg("pdf_nombres_1_67"):
+        if self.db.cfg("pdf_nombres_1_71"):
             return
         def mover(carpeta, viejo, nuevo):
             dst = os.path.join(carpeta, nuevo); i = 2
@@ -1978,6 +1978,18 @@ class App:
                 m = re.fullmatch(pref + r"_(\d+)\.pdf", f, re.I)
                 if m:
                     mover(c, f, os.path.basename(self.doc_path(kind, int(m.group(1)))))
+        c = self.db.carpeta("F")
+        for f in os.listdir(c):
+            m = re.fullmatch(r"recibo_(\d+)(?:_(\d+))?\.pdf", f, re.I)
+            if m:
+                n = int(m.group(1)); r = self.db.one("SELECT name, client FROM invoices WHERE nro=?", (n,))
+                quien = nombre_propio((r["name"] or r["client"] or "") if r else "")
+                if m.group(2):
+                    num = f"recibo {m.group(2)}"
+                else:
+                    ids = [x["id"] for x in self.db.q("SELECT id FROM payments WHERE nro=? ORDER BY id", (n,))]
+                    num = f"recibo {ids[0]}" if len(ids) == 1 else ("recibos " + ", ".join(str(i) for i in ids) if ids else "recibo")
+                mover(c, f, nombre_archivo(f"{quien} {num} fact {n}"))
         c = self.db.carpeta("R")
         for f in os.listdir(c):
             m = re.fullmatch(r"(Estado_Cta_Prov_|Estado_Cta_|Saldos_por_pagar|Saldos_vencidos)(.*?)_?(\d{4})(\d{2})(\d{2})_\d{6}\.pdf", f, re.I)
@@ -1993,7 +2005,7 @@ class App:
             else:
                 nuevo = f"{self.nombre_cliente(quien)} estado de cuenta {fecha}"
             mover(c, f, nombre_archivo(nuevo))
-        self.db.set_cfg("pdf_nombres_1_67", "1")
+        self.db.set_cfg("pdf_nombres_1_71", "1")
 
     def nombre_cliente(self, code):
         r = self.db.one("SELECT name FROM clients WHERE code=?", (code,))
@@ -2377,7 +2389,11 @@ class App:
         if n is None: return
         if not self.db.one("SELECT COUNT(*) FROM payments WHERE nro=?", (n,))[0]:
             messagebox.showinfo("Recibo de pago", f"La factura {n} no tiene pagos registrados."); return
-        ruta = os.path.join(self.db.carpeta("F"), f"recibo_{n}_{pid}.pdf" if pid else f"recibo_{n}.pdf")
+        r = self.db.one("SELECT name, client FROM invoices WHERE nro=?", (n,))
+        quien = nombre_propio((r["name"] or r["client"] or "") if r else "")
+        ids = [pid] if pid else [x["id"] for x in self.db.q("SELECT id FROM payments WHERE nro=? ORDER BY id", (n,))]
+        num = f"recibo {ids[0]}" if len(ids) == 1 else "recibos " + ", ".join(str(i) for i in ids)
+        ruta = os.path.join(self.db.carpeta("F"), nombre_archivo(f"{quien} {num} fact {n}"))
         try:
             generar_recibo(self.db, n, ruta, pid)
         except PermissionError:
