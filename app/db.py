@@ -631,16 +631,18 @@ class DB:
             self._rebuild_moves(nro)
         self.con.commit()
 
-    def pagadas_recientes(self, limite=10):
-        """Ultimas facturas pagadas por completo, por fecha de su ultimo pago: [(inv, fecha_pago)]."""
-        filas = self.q("SELECT nro, MAX(d) d FROM ("
+    def pagadas_recientes(self, limite=12):
+        """Ultimas facturas pagadas por completo, por fecha de su ultimo pago: [(inv, fecha_pago)].
+        Una factura que se marcó NO pagada y después se cobró también sale (con la fecha de su cobro nuevo)."""
+        filas = self.q("SELECT p.nro, MAX(p.d) d FROM ("
                        " SELECT nro, date d FROM payments"
-                       " UNION ALL SELECT nro_fact nro, date d FROM ledger WHERE tipo='P' AND nro_fact>0"
-                       ") GROUP BY nro ORDER BY d DESC, nro DESC")
+                       " UNION ALL SELECT l.nro_fact nro, l.date d FROM ledger l JOIN invoices i ON i.nro=l.nro_fact"
+                       "  WHERE l.tipo='P' AND l.nro_fact>0 AND COALESCE(i.unpaid,0)=0"
+                       ") p GROUP BY p.nro ORDER BY d DESC, p.nro DESC")
         out = []
         for f in filas:
             inv = self.one("SELECT * FROM invoices WHERE nro=? AND deleted=0", (f["nro"],))
-            if not inv or (inv["total"] or 0) <= 0 or inv["unpaid"]:
+            if not inv or (inv["total"] or 0) <= 0:
                 continue
             if self.invoice_saldo(f["nro"]) <= 0.005:
                 out.append((inv, f["d"]))

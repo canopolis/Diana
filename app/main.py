@@ -34,7 +34,7 @@ from pdf_factura import generar_factura, generar_conduce, generar_cotizacion, ge
 import reportes
 import costeo
 
-VERSION = "1.69"
+VERSION = "1.70"
 NOMBRE = "Diana"
 
 
@@ -2015,6 +2015,10 @@ class App:
         for t in getattr(self, "docs", {}).values(): t.load()
         for t in (getattr(self, "diario", None), getattr(self, "catalogo", None)):
             if t: t.load()
+        try:
+            if getattr(self, "_pagadas_cargar", None): self._pagadas_cargar()
+        except Exception:
+            self._pagadas_cargar = None
 
     def update_banner(self):
         avisos = self.db.low_sequences()
@@ -3055,16 +3059,19 @@ class App:
 
     def cxc_pagadas(self):
         top = tk.Toplevel(self.root); top.title("Pagadas recientemente"); top.transient(self.root)
-        ttk.Label(top, text="Últimas 10 facturas pagadas por completo").pack(anchor="w", padx=10, pady=(10, 4))
+        ttk.Label(top, text="Últimas 12 facturas pagadas por completo").pack(anchor="w", padx=10, pady=(10, 4))
         cols = ("Nro", "Fecha", "Cliente", "Total", "Pagada el")
-        tv = ttk.Treeview(top, columns=cols, show="headings", height=10)
+        tv = ttk.Treeview(top, columns=cols, show="headings", height=12)
         for c, w in zip(cols, (70, 90, 330, 110, 90)):
             tv.heading(c, text=c); tv.column(c, width=w, anchor="e" if c in ("Nro", "Total") else "w")
         tv.pack(fill="both", expand=True, padx=10)
         def cargar():
             tv.delete(*tv.get_children())
-            for inv, fp in self.db.pagadas_recientes(10):
+            if not top.winfo_exists(): return
+            tv.delete(*tv.get_children())
+            for inv, fp in self.db.pagadas_recientes(12):
                 tv.insert("", "end", iid=str(inv["nro"]), values=(inv["nro"], dmy(inv["date"]), inv["name"], m2(inv["total"]), dmy(fp)))
+        self._pagadas_cargar = cargar   # se actualiza sola cada vez que se registra un cobro con la ventana abierta
         def sel():
             s = tv.selection()
             if not s:
