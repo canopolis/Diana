@@ -895,7 +895,7 @@ class ReportesContTab:
         ttk.Label(pf, text="Período").pack(side="left")
         ttk.Spinbox(pf, from_=1, to=12, textvariable=self.vper, width=4).pack(side="left", padx=4)
         ttk.Label(pf, text="Año").pack(side="left")
-        ttk.Entry(pf, textvariable=self.vyear, width=6).pack(side="left", padx=4)
+        ttk.Spinbox(pf, from_=2000, to=2100, textvariable=self.vyear, width=6).pack(side="left", padx=4)
         for t, fn, nom in (("Estado de resultados", rep_contab.estado_resultados, "estado_resultados"),
                            ("Balance General", rep_contab.balance_general, "balance_general"),
                            ("Balanza de comprobación", rep_contab.balanza, "balanza")):
